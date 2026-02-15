@@ -117,12 +117,24 @@ function getStored(): StoredSession[] {
   return getRaw().map((s) => (isLegacy(s) ? migrate(s) : s));
 }
 
-function setStored(sessions: StoredSession[]): void {
-  if (typeof window === "undefined") return;
+type SetStoredResult = { ok: true } | { ok: false; error: string };
+
+function setStored(sessions: StoredSession[]): SetStoredResult {
+  if (typeof window === "undefined") return { ok: false, error: "Storage not available." };
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
-  } catch {
-    // ignore quota or other errors
+    return { ok: true };
+  } catch (e) {
+    const err = e instanceof Error ? e : new Error(String(e));
+    const isQuota =
+      err.name === "QuotaExceededError" ||
+      (typeof DOMException !== "undefined" && err instanceof DOMException && err.code === 22);
+    return {
+      ok: false,
+      error: isQuota
+        ? "Storage full. Delete old sessions in Library to free space."
+        : "Storage disabled or unavailable. Check browser settings or try a different browser.",
+    };
   }
 }
 
@@ -134,8 +146,16 @@ export function getStoredSessions(): StoredSession[] {
   return getStored();
 }
 
+export type SaveSessionResult =
+  | { ok: true; session: StoredSession }
+  | { ok: false; error: string };
+
 /**
  * Save a session with full engine configuration.
+ *
+ * Returns { ok, session } on success or { ok: false, error } if storage fails
+ * (e.g. quota exceeded, private browsing). Callers should only clear in-memory
+ * state after ok: true.
  *
  * Also accepts the legacy `{ name, viewMode, recording }` shape for backward
  * compatibility — missing fields are backfilled with defaults.
@@ -152,7 +172,7 @@ export function saveSession(payload: {
   viewMode?: ViewMode;
   /** For review UI: e.g. 12 for "12% shrink". */
   sensitivityPercent?: number;
-}): StoredSession {
+}): SaveSessionResult {
   const viewId: ViewId =
     payload.view ?? (payload.viewMode === "side" ? "side" : "front");
 
@@ -169,15 +189,20 @@ export function saveSession(payload: {
     recording: payload.recording,
     handRecording: payload.handRecording,
     savedAt: Date.now(),
-    // Keep legacy field so existing UI components don't break
     viewMode: viewId === "side" ? "side" : "front",
     sensitivityPercent: payload.sensitivityPercent,
   };
 
   const sessions = getStored();
   sessions.unshift(session);
-  setStored(sessions);
-  return session;
+  const written = setStored(sessions);
+  if (!written) {
+    return {
+      ok: false,
+      error: "Could not save (storage full or disabled). Try freeing space or allow storage.",
+    };
+  }
+  return { ok: true, session };
 }
 
 export function getSessionById(id: string): StoredSession | null {
