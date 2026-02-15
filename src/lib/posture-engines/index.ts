@@ -1,11 +1,3 @@
-// Legacy class-based engines (kept for backward compatibility)
-export { BaseView } from "./BaseView";
-export { FrontView } from "./FrontView";
-export { SideView } from "./SideView";
-export { PianoView } from "./PianoView";
-export { GuitarView } from "./GuitarView";
-export { getEngine } from "./EngineFactory";
-
 // New composition-based architecture
 export type { ViewStrategy, ViewResult } from "./ViewStrategies";
 export {
@@ -13,9 +5,9 @@ export {
   SideViewStrategy,
   AutoDetectStrategy,
 } from "./ViewStrategies";
-export type { Sensitivity, InstrumentConfig } from "./Instruments";
+export type { InstrumentConfig } from "./Instruments";
 export { Instrument, Piano, Guitar, Generic } from "./Instruments";
-export type { InstrumentId, ViewId, EngineOptions, LegacyEngineId } from "./EngineFactory";
+export type { InstrumentId, ViewId, EngineOptions } from "./EngineFactory";
 export { EngineFactory } from "./EngineFactory";
 
 // Shared types
@@ -28,6 +20,8 @@ export type {
   Baseline,
   ValidateInput,
   ValidateResult,
+  PostureThresholds,
+  PostureAlertType,
 } from "./types";
 
 // Utilities
@@ -43,4 +37,9 @@ export {
   dist3,
   angleEarShoulderHipWorld,
   angleEarShoulderHip2D,
+  DEFAULT_THRESHOLDS,
+  SENSITIVITY_MIN_PCT,
+  SENSITIVITY_MAX_PCT,
+  sensitivityToRatioThreshold,
+  sensitivityToAngleRatioSide,
 } from "./utils";

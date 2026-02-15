@@ -9,7 +9,8 @@
 import type { SessionRecording } from "./SessionRecorder";
 import type { Baseline } from "./posture-engines/types";
 import type { InstrumentId, ViewId } from "./posture-engines/EngineFactory";
-import type { Sensitivity } from "./posture-engines/Instruments";
+/** Legacy sessions used string labels; new sessions use numeric 0-100. */
+type Sensitivity = "low" | "medium" | "high" | number;
 import type { HandFrame } from "./dexterity/types";
 
 /** Display labels for instruments (dashboard tags, library section headers). */

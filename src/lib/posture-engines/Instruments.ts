@@ -4,15 +4,18 @@
  * Each Instrument composes a ViewStrategy and layers instrument-specific
  * filtering on top. Filters only ever suppress false positives; they never
  * make a result worse.
+ *
+ * Each instrument provides its own PostureThresholds (merged with defaults).
+ * ViewStrategies use these thresholds instead of global constants.
  */
 
 import type {
   WorldLandmark,
-  ImageLandmark,
   Baseline,
   SideBaseline,
   ValidateInput,
   ValidateResult,
+  PostureThresholds,
 } from "./types";
 import type { ViewStrategy, ViewResult } from "./ViewStrategies";
 import { FrontViewStrategy, SideViewStrategy } from "./ViewStrategies";
@@ -22,6 +25,7 @@ import {
   SHOULDER_LEFT,
   SHOULDER_RIGHT,
   dist3,
+  DEFAULT_THRESHOLDS,
 } from "./utils";
 import type { DexterityMetric } from "../dexterity/types";
 
@@ -29,21 +33,14 @@ import type { DexterityMetric } from "../dexterity/types";
 // Shared types
 // ---------------------------------------------------------------------------
 
-export type Sensitivity = "low" | "medium" | "high";
-
 export interface InstrumentConfig {
   view: ViewStrategy;
-  sensitivity?: Sensitivity;
+  sensitivity?: number;
+  /** Optional instrument-specific threshold overrides. */
+  thresholds?: Partial<PostureThresholds>;
   /** Optional dexterity metrics — observational only, never affect posture. */
   dexterity?: DexterityMetric[];
 }
-
-/** Maps sensitivity labels to a multiplier applied to the view's threshold. */
-const SENSITIVITY_MULTIPLIER: Record<Sensitivity, number> = {
-  low: 1.25,   // more forgiving
-  medium: 1.0, // default
-  high: 0.75,  // stricter
-};
 
 // ---------------------------------------------------------------------------
 // Base Instrument
@@ -52,14 +49,14 @@ const SENSITIVITY_MULTIPLIER: Record<Sensitivity, number> = {
 export abstract class Instrument {
   abstract readonly name: string;
   protected readonly view: ViewStrategy;
-  protected readonly sensitivity: Sensitivity;
-  protected readonly sensitivityMultiplier: number;
+  readonly thresholds: PostureThresholds;
+  private readonly sensitivityValue: number;
   private readonly dexterityMetrics: DexterityMetric[];
 
   constructor(config: InstrumentConfig) {
     this.view = config.view;
-    this.sensitivity = config.sensitivity ?? "medium";
-    this.sensitivityMultiplier = SENSITIVITY_MULTIPLIER[this.sensitivity];
+    this.sensitivityValue = config.sensitivity ?? 50;
+    this.thresholds = { ...DEFAULT_THRESHOLDS, ...config.thresholds };
     this.dexterityMetrics = config.dexterity ?? [];
   }
 
@@ -76,12 +73,10 @@ export abstract class Instrument {
   /**
    * Full validation pipeline:
    *   ViewStrategy.validate → applyFilters → ValidateResult
-   *
-   * If `input.handFrames` are provided, dexterity metrics are updated
-   * as a side-effect (they never influence the posture result).
    */
   validate(input: ValidateInput): ValidateResult {
     const { landmarks, baseline, imageLandmarks, handFrames } = input;
+    const sensitivity = input.sensitivity ?? this.sensitivityValue;
 
     // Drive dexterity metrics (observational only).
     if (handFrames && handFrames.length > 0) {
@@ -92,9 +87,21 @@ export abstract class Instrument {
       }
     }
 
-    const raw = this.view.validate(landmarks, baseline, imageLandmarks);
+    const raw = this.view.validate(
+      landmarks,
+      baseline,
+      imageLandmarks,
+      sensitivity,
+      this.thresholds,
+    );
     const filtered = this.applyFilters(raw, landmarks, baseline);
-    return { isTense: filtered.isTense, feedback: filtered.feedback };
+    return {
+      leanRaw: filtered.leanRaw,
+      tensionRaw: filtered.tensionRaw,
+      isShrug: filtered.isShrug,
+      quality: filtered.quality,
+      feedback: filtered.feedback,
+    };
   }
 
   /** Retrieve current results from all composed dexterity metrics. */
@@ -140,6 +147,7 @@ export class Piano extends Instrument {
     super({
       view: config?.view ?? new SideViewStrategy(),
       sensitivity: config?.sensitivity,
+      thresholds: config?.thresholds,
       dexterity: config?.dexterity,
     });
   }
@@ -149,7 +157,7 @@ export class Piano extends Instrument {
     landmarks: WorldLandmark[],
     baseline: Baseline,
   ): ViewResult {
-    if (!result.isTense || landmarks.length < 25) return result;
+    if (!result.tensionRaw || landmarks.length < 25) return result;
 
     const base = baseline as SideBaseline;
     const baseLeft = base.wristShoulderDistLeft ?? 0;
@@ -164,7 +172,11 @@ export class Piano extends Instrument {
 
     // Wrists extended beyond baseline → pianist reaching for keys, not shrugging.
     if (avgNow > avgBase * PIANIST_EXTENSION_RATIO) {
-      return { isTense: false, feedback: "Good posture" };
+      return {
+        ...result,
+        tensionRaw: false,
+        feedback: "Good posture",
+      };
     }
 
     return result;
@@ -182,12 +194,10 @@ export class Guitar extends Instrument {
     super({
       view: config?.view ?? new FrontViewStrategy(),
       sensitivity: config?.sensitivity,
+      thresholds: config?.thresholds,
       dexterity: config?.dexterity,
     });
   }
-
-  // Passthrough — no instrument-specific overrides yet.
-  // Ready for future rules (e.g. allowing asymmetric shoulders for classical hold).
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +211,7 @@ export class Generic extends Instrument {
     super({
       view: config?.view ?? new FrontViewStrategy(),
       sensitivity: config?.sensitivity,
+      thresholds: config?.thresholds,
       dexterity: config?.dexterity,
     });
   }

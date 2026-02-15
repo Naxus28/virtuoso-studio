@@ -109,7 +109,7 @@ export class ReplayMode {
     for (const frame of this.recording.frames) {
       const result = this.processFrame(frame);
 
-      if (result.isTense) {
+      if (result.leanRaw || result.tensionRaw) {
         tensionFrames++;
         alertTimestamps.push(frame.timestamp);
       }
@@ -155,9 +155,20 @@ export class ReplayMode {
   // -------------------------------------------------------------------------
 
   private buildEngine(session: StoredSession): Instrument {
+    // Legacy sessions stored string labels; convert to numeric sensitivity.
+    let sensitivity: number | undefined;
+    if (typeof session.sensitivity === "number") {
+      sensitivity = session.sensitivity;
+    } else if (session.sensitivity === "low") {
+      sensitivity = 75;
+    } else if (session.sensitivity === "high") {
+      sensitivity = 25;
+    } else {
+      sensitivity = 50; // "medium" or default
+    }
     return EngineFactory.create(session.instrument, {
       view: session.view,
-      sensitivity: session.sensitivity,
+      sensitivity,
     });
   }
 
@@ -166,7 +177,10 @@ export class ReplayMode {
     if (this.useFallback) {
       const isTense = frame.quality < 0.88;
       return {
-        isTense,
+        leanRaw: false,
+        tensionRaw: isTense,
+        isShrug: false,
+        quality: frame.quality,
         feedback: isTense
           ? "Tension detected (from stored quality)"
           : "Good posture",

@@ -22,50 +22,45 @@ import {
 import { SessionRecorder } from "@/lib/SessionRecorder";
 import type { SessionRecording } from "@/lib/SessionRecorder";
 import { saveSession, getSessionById, getStoredSessions } from "@/lib/sessionLibrary";
-import type { SessionRecording } from "@/lib/SessionRecorder";
 import { SessionStats } from "@/components/SessionStats";
 import { drawSkeleton, drawAlignmentGrid, drawBodyGuide } from "./PostureEngine.draw";
+import {
+  EngineFactory,
+  Instrument,
+  SENSITIVITY_MIN_PCT,
+  SENSITIVITY_MAX_PCT,
+  EAR_LEFT,
+  EAR_RIGHT,
+  SHOULDER_LEFT,
+  SHOULDER_RIGHT,
+  HIP_LEFT,
+  HIP_RIGHT,
+  WRIST_LEFT,
+  WRIST_RIGHT,
+  angleEarShoulderHipWorld,
+  dist3,
+} from "@/lib/posture-engines";
+import type {
+  FrontBaseline,
+  SideBaseline,
+  PostureAlertType,
+  InstrumentId,
+} from "@/lib/posture-engines";
 
 const PostureReview3D = dynamic(
   () => import("@/components/PostureReview3D").then((m) => m.PostureReview3D),
   { ssr: false }
 );
 
-// MediaPipe Pose landmark indices
-const EAR_LEFT = 7;
-const EAR_RIGHT = 8;
-const SHOULDER_LEFT = 11;
-const SHOULDER_RIGHT = 12;
-const HIP_LEFT = 23;
-const HIP_RIGHT = 24;
-
 const SMOOTHING_ALPHA = 0.3;
 /** Only alert after bad posture persists this long (ms) — 0.5s for rapid response */
 const PERSISTENCE_MS = 500;
 /** ~30fps → frames needed for persistence */
 const PERSISTENCE_FRAMES = Math.max(1, Math.round((PERSISTENCE_MS / 1000) * 30));
-/** Lean: angle (ear-shoulder-hip) below baseline * this = head forward (front view) */
-const LEAN_ANGLE_RATIO = 0.88;
-/** Side view: one shoulder visible — use lower threshold (12mm) so single-shoulder shrug is detected. */
-const SHRUG_SIDE_M = 0.012;
-/** Tension: shoulders elevated vs baseline (world Y). Lower = more sensitive to subtle tension. */
-const TENSION_SHOULDER_UP_WORLD_M = 0.005; // ~5mm elevation triggers (catch before you feel it)
-/** Only treat as shrug (don’t alert) when shoulder rises this much with ear stable — so small elevation still = tension */
-const SHRUG_TOLERANCE_WORLD = 0.025; // ~25mm one-sided rise with ear stable = shrug
-/** When vertical ear–shoulder shrinks, if angle (ear-shoulder-hip) also dropped = head tilt/lean, not tension */
-const ANGLE_DROP_FOR_HEAD_POSE = 0.98; // angle < baseline*this → head position (chin up); only unchanged angle = shoulder tension
 /** Quality below this = show alert in playback/chart (0–1) */
 const QUALITY_ALERT_THRESHOLD = 0.88;
-/** Front view: symmetry = within baseline asymmetry + this (m). Personalized. */
-const SYMMETRY_TOLERANCE_ABOVE_BASELINE_M = 0.012;
-/** Alert when current asymmetry exceeds baseline by at least this (m). Personalized. */
-const ASYMMETRY_DEVIATION_ABOVE_BASELINE_M = 0.008;
-/** Minimum asymmetry (m) to ever trigger; avoids noise when baseline is near zero. */
-const MIN_ASYMMETRY_ALERT_M = 0.006;
 /** Map shoulder asymmetry (m) to chart severity for tension. Asymmetry >= this = worst (0.5). */
 const TENSION_SEVERITY_MAX_ASYMMETRY_M = 0.06;
-/** Reject calibration if shoulders are this uneven (m); avoids locking in a tense baseline. */
-const CALIBRATION_MAX_ASYMMETRY_M = 0.025;
 
 const TENSION_HUM_HZ = 200;
 const TENSION_HUM_GAIN_MIN = 0.05;
@@ -103,232 +98,6 @@ function lowPassWorld(
   };
 }
 
-/** 3D distance in meters (world coordinates). */
-function dist3(a: WorldLandmark, b: WorldLandmark): number {
-  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
-}
-
-/** Angle in degrees at shoulder between vectors shoulder→ear and shoulder→hip (3D). Smaller = head forward (lean). */
-function angleEarShoulderHipWorld(
-  ear: WorldLandmark,
-  shoulder: WorldLandmark,
-  hip: WorldLandmark
-): number {
-  const vx = ear.x - shoulder.x;
-  const vy = ear.y - shoulder.y;
-  const vz = ear.z - shoulder.z;
-  const wx = hip.x - shoulder.x;
-  const wy = hip.y - shoulder.y;
-  const wz = hip.z - shoulder.z;
-  const dot = vx * wx + vy * wy + vz * wz;
-  const magV = Math.hypot(vx, vy, vz) || 1e-6;
-  const magW = Math.hypot(wx, wy, wz) || 1e-6;
-  const cos = Math.max(-1, Math.min(1, dot / (magV * magW)));
-  return (Math.acos(cos) * 180) / Math.PI;
-}
-
-/** Front view: baseline from world landmarks (3D meters). */
-export type PostureBaseline = {
-  angleLeft: number;
-  angleRight: number;
-  earYLeft: number;
-  earYRight: number;
-  shoulderYLeft: number;
-  shoulderYRight: number;
-  /** Vertical ear–shoulder distance (world Y) for tension-from-compression. */
-  earShoulderVertLeft: number;
-  earShoulderVertRight: number;
-};
-
-/** Sensitivity 0–100: 0 = 1% shrink (very strict), 100 = 25% shrink (very loose). */
-export const SENSITIVITY_MIN_PCT = 1;
-export const SENSITIVITY_MAX_PCT = 25;
-
-/** Side view: baseline distances, angles, and shoulder/ear for shrug vs lean. */
-export type SideViewBaseline = {
-  distLeft: number;
-  distRight: number;
-  angleLeft: number;
-  angleRight: number;
-  /** For shrug/tension: shoulder and ear Y (world); optional for legacy. */
-  shoulderYLeft?: number;
-  shoulderYRight?: number;
-  earYLeft?: number;
-  earYRight?: number;
-  earShoulderVertLeft?: number;
-  earShoulderVertRight?: number;
-};
-
-export type PostureAlertType = null | "lean" | "tension";
-
-export type ViewMode = "front" | "side";
-
-
-/** Sensitivity 0–100 → ratio threshold (trigger when ear-shoulder shrinks below this). 0 = 1%, 100 = 25%. */
-function sensitivityToRatioThreshold(sensitivityPercent: number): number {
-  const pct = Math.max(0, Math.min(100, sensitivityPercent));
-  return 0.99 - (pct / 100) * 0.24; // 1% shrink → 0.99, 25% shrink → 0.75
-}
-
-/** Side view: sensitivity → angle ratio (trigger lean when angle < baseline * this). 0 = 1% drop, 100 = 10% drop. */
-function sensitivityToAngleRatioSide(sensitivityPercent: number): number {
-  const pct = Math.max(0, Math.min(100, sensitivityPercent));
-  return 0.99 - (pct / 100) * 0.09; // strict (0) → 0.99, loose (100) → 0.90
-}
-
-/** Front view: angle + shoulder symmetry + vertical compression (world coords). */
-function evaluatePostureFront(
-  w: WorldLandmark[],
-  baseline: PostureBaseline,
-  sensitivityPercent: number
-): { leanRaw: boolean; tensionRaw: boolean; isShrug: boolean; quality: number } {
-  if (w.length < 25) return { leanRaw: false, tensionRaw: false, isShrug: false, quality: 1 };
-  const angleL = angleEarShoulderHipWorld(w[EAR_LEFT], w[SHOULDER_LEFT], w[HIP_LEFT]);
-  const angleR = angleEarShoulderHipWorld(w[EAR_RIGHT], w[SHOULDER_RIGHT], w[HIP_RIGHT]);
-  const avgAngle = (angleL + angleR) / 2;
-  const baselineAngle = (baseline.angleLeft + baseline.angleRight) / 2;
-  const leanRaw = avgAngle < baselineAngle * LEAN_ANGLE_RATIO;
-
-  const earYLeft = w[EAR_LEFT].y;
-  const earYRight = w[EAR_RIGHT].y;
-  const shoulderYLeft = w[SHOULDER_LEFT].y;
-  const shoulderYRight = w[SHOULDER_RIGHT].y;
-  const shoulderUpLeft = baseline.shoulderYLeft - shoulderYLeft > SHRUG_TOLERANCE_WORLD;
-  const shoulderUpRight = baseline.shoulderYRight - shoulderYRight > SHRUG_TOLERANCE_WORLD;
-  const earStableLeft = earYLeft <= baseline.earYLeft + SHRUG_TOLERANCE_WORLD;
-  const earStableRight = earYRight <= baseline.earYRight + SHRUG_TOLERANCE_WORLD;
-  const isShrug = (shoulderUpLeft && earStableLeft) || (shoulderUpRight && earStableRight);
-
-  const avgShoulderY = (shoulderYLeft + shoulderYRight) / 2;
-  const baselineShoulderY = (baseline.shoulderYLeft + baseline.shoulderYRight) / 2;
-  const avgEarY = (earYLeft + earYRight) / 2;
-  const baselineEarY = (baseline.earYLeft + baseline.earYRight) / 2;
-  const shouldersHigh = baselineShoulderY - avgShoulderY > TENSION_SHOULDER_UP_WORLD_M;
-  const earNotDropped = avgEarY <= baselineEarY + SHRUG_TOLERANCE_WORLD;
-
-  // Personalized from calibration: baseline asymmetry (relaxed pose) + tolerance
-  const baselineAsymmetry = Math.abs(baseline.shoulderYLeft - baseline.shoulderYRight);
-  const shoulderAsymmetry = Math.abs(shoulderYLeft - shoulderYRight);
-  const shoulderSymmetry =
-    shoulderAsymmetry <= baselineAsymmetry + SYMMETRY_TOLERANCE_ABOVE_BASELINE_M;
-
-  const vertLeft = Math.abs(w[EAR_LEFT].y - w[SHOULDER_LEFT].y);
-  const vertRight = Math.abs(w[EAR_RIGHT].y - w[SHOULDER_RIGHT].y);
-  const avgVert = (vertLeft + vertRight) / 2;
-  const baselineVert = (baseline.earShoulderVertLeft + baseline.earShoulderVertRight) / 2;
-  const vertRatio = baselineVert > 1e-6 ? avgVert / baselineVert : 1;
-  const ratioThreshold = sensitivityToRatioThreshold(sensitivityPercent);
-  // Angle drops when head tilts down or forward; if angle dropped, it's head pose (lean), not shoulder tension
-  const angleDropped = avgAngle < baselineAngle * ANGLE_DROP_FOR_HEAD_POSE;
-  const verticalShrink = vertRatio < ratioThreshold && !isShrug;
-
-  // Only show "tension" when vertical shrink AND angle did NOT drop (true shoulder hunch, not head-down)
-  const tensionFromElevation =
-    shouldersHigh && earNotDropped && !leanRaw && shoulderSymmetry && !angleDropped;
-  const tensionFromVertical = verticalShrink && !angleDropped;
-
-  // Personalized: tension when current asymmetry exceeds relaxed baseline by at least 8mm (or 6mm floor)
-  const personalizedAsymmetryThreshold = Math.max(
-    baselineAsymmetry + ASYMMETRY_DEVIATION_ABOVE_BASELINE_M,
-    MIN_ASYMMETRY_ALERT_M
-  );
-  const tensionFromAsymmetry = shoulderAsymmetry > personalizedAsymmetryThreshold;
-
-  // Vertical shrink + angle dropped = head tilt/forward → show lean (chin up), not shoulder message
-  const headDownLean = verticalShrink && angleDropped;
-
-  const tensionRaw =
-    tensionFromElevation || tensionFromVertical || tensionFromAsymmetry;
-  const leanRawResolved = leanRaw || headDownLean;
-
-  const quality = Math.min(1, avgAngle / baselineAngle);
-  return { leanRaw: leanRawResolved, tensionRaw, isShrug, quality };
-}
-
-/** Side view: lean = head forward (angle drop, threshold from sensitivity). Tension = one-shoulder shrug or ear-shoulder shrink without angle drop.
- *  Uses only the "visible" side angle (the side facing the camera) so head rotation doesn't cancel the alert — when you turn your head,
- *  the occluded side's angle is unreliable and averaging both sides was turning the alert off. */
-function evaluatePostureSide(
-  w: WorldLandmark[],
-  baseline: SideViewBaseline,
-  sensitivityPercent: number
-): { leanRaw: boolean; tensionRaw: boolean; isShrug: boolean; quality: number } {
-  if (w.length < 25) return { leanRaw: false, tensionRaw: false, isShrug: false, quality: 1 };
-  const ratioThreshold = sensitivityToRatioThreshold(sensitivityPercent);
-  const angleRatioSide = sensitivityToAngleRatioSide(sensitivityPercent);
-
-  const distLeft = dist3(w[EAR_LEFT], w[SHOULDER_LEFT]);
-  const distRight = dist3(w[EAR_RIGHT], w[SHOULDER_RIGHT]);
-  const avgDist = (distLeft + distRight) / 2;
-  const baselineDist = (baseline.distLeft + baseline.distRight) / 2;
-  const ratio = baselineDist > 1e-6 ? avgDist / baselineDist : 1;
-  const distanceShrink = ratio < ratioThreshold;
-
-  const angleLeft = angleEarShoulderHipWorld(w[EAR_LEFT], w[SHOULDER_LEFT], w[HIP_LEFT]);
-  const angleRight = angleEarShoulderHipWorld(w[EAR_RIGHT], w[SHOULDER_RIGHT], w[HIP_RIGHT]);
-  // In side view only one side is visible; the other is occluded when the head is turned. Use the side with larger ear-shoulder distance (facing camera).
-  const useLeftAngle = distLeft >= distRight;
-  const currentAngle = useLeftAngle ? angleLeft : angleRight;
-  const baselineAngle =
-    baseline.angleLeft != null && baseline.angleRight != null
-      ? (useLeftAngle ? baseline.angleLeft : baseline.angleRight)
-      : 0;
-  // User-controlled: strict (0) = 1% angle drop = lean, loose (100) = 10% drop
-  const angleDropped =
-    baselineAngle > 0 && currentAngle < baselineAngle * angleRatioSide;
-
-  // Shrug/tension: in side view only one shoulder is visible — use lower threshold (12mm) so one-shoulder shrug is captured
-  const hasShoulderBaseline =
-    baseline.shoulderYLeft != null &&
-    baseline.shoulderYRight != null &&
-    baseline.earYLeft != null &&
-    baseline.earYRight != null;
-  let tensionRaw = false;
-  let isShrug = false;
-  if (hasShoulderBaseline) {
-    const shoulderYLeft = w[SHOULDER_LEFT].y;
-    const shoulderYRight = w[SHOULDER_RIGHT].y;
-    const earYLeft = w[EAR_LEFT].y;
-    const earYRight = w[EAR_RIGHT].y;
-    const shoulderUpLeft =
-      baseline.shoulderYLeft! - shoulderYLeft > SHRUG_SIDE_M;
-    const shoulderUpRight =
-      baseline.shoulderYRight! - shoulderYRight > SHRUG_SIDE_M;
-    const earStableLeft = earYLeft <= baseline.earYLeft! + SHRUG_SIDE_M;
-    const earStableRight =
-      earYRight <= baseline.earYRight! + SHRUG_SIDE_M;
-    isShrug = (shoulderUpLeft && earStableLeft) || (shoulderUpRight && earStableRight);
-    const avgShoulderY = (shoulderYLeft + shoulderYRight) / 2;
-    const baselineShoulderY =
-      (baseline.shoulderYLeft! + baseline.shoulderYRight!) / 2;
-    const avgEarY = (earYLeft + earYRight) / 2;
-    const baselineEarY = (baseline.earYLeft! + baseline.earYRight!) / 2;
-    const shouldersHigh =
-      baselineShoulderY - avgShoulderY > TENSION_SHOULDER_UP_WORLD_M;
-    const earNotDropped =
-      avgEarY <= baselineEarY + SHRUG_SIDE_M;
-    const tensionFromElevation = shouldersHigh && earNotDropped && !angleDropped;
-    // Only use vertical shrink as tension when we have angle baseline and angle did NOT drop (else it's head tilt)
-    const tensionFromVerticalShrink =
-      distanceShrink && !angleDropped && baselineAngle > 0;
-    // Head tilt (angle drop) always wins: show lean, never tension, so the message matches the posture
-    // When we have no angle baseline we can't tell head tilt from shrug, so don't show tension
-    tensionRaw =
-      baselineAngle > 0 &&
-      !angleDropped &&
-      (isShrug || tensionFromElevation || tensionFromVerticalShrink);
-  }
-
-  // Lean = head forward / head tilted down (angle drop). If no angle baseline, distance shrink = ambiguous → treat as lean so we don't show shoulder message for head tilt.
-  const leanRaw = angleDropped || (baselineAngle <= 0 && distanceShrink);
-  const quality = Math.min(
-    1,
-    ratio,
-    baselineAngle > 0 ? currentAngle / baselineAngle : 1
-  );
-  return { leanRaw, tensionRaw, isShrug, quality };
-}
-
 function formatPlaybackTime(ms: number): string {
   const s = Math.floor(ms / 1000);
   const m = Math.floor(s / 60);
@@ -336,11 +105,13 @@ function formatPlaybackTime(ms: number): string {
   return m > 0 ? `${m}:${String(sec).padStart(2, "0")}` : `0:${String(sec).padStart(2, "0")}`;
 }
 
+export type ViewMode = "front" | "side";
+
 type PostureEngineProps = {
   /** When set, load this session from the library and start replay. */
   replayId?: string | null;
   /** Instrument chosen on dashboard; used when saving so sessions are tagged correctly. */
-  instrument?: import("@/lib/posture-engines/EngineFactory").InstrumentId;
+  instrument?: InstrumentId;
 };
 
 export function PostureEngine({ replayId, instrument: instrumentProp = "generic" }: PostureEngineProps = {}) {
@@ -362,15 +133,15 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
   const playbackTimeRef = useRef<number>(0);
   const lastTickTimeRef = useRef<number>(0);
   const lastFrameIndexRef = useRef<number>(-1);
+  const engineRef = useRef<Instrument | null>(null);
 
   const [viewMode, setViewMode] = useState<ViewMode>("front");
   const appliedInstrumentViewRef = useRef(false);
-  const [sensitivity, setSensitivity] = useState(50); // 0–100; 50 = recommended balance (movement range vs catching tension)
+  const [sensitivity, setSensitivity] = useState(50); // 0–100; 50 = recommended balance
   const [isCalibrated, setIsCalibrated] = useState(false);
-  const [baseline, setBaseline] = useState<PostureBaseline | null>(null);
-  const [sideViewBaseline, setSideViewBaseline] = useState<SideViewBaseline | null>(null);
+  const [baseline, setBaseline] = useState<FrontBaseline | null>(null);
+  const [sideViewBaseline, setSideViewBaseline] = useState<SideBaseline | null>(null);
   const [alertType, setAlertType] = useState<PostureAlertType>(null);
-  /** When set, calibration was rejected (e.g. pose too tense); show message and do not set baseline. */
   const [calibrationRejectedReason, setCalibrationRejectedReason] = useState<string | null>(null);
   const [landmarks, setLandmarks] = useState<Landmark[]>([]);
   const [isPoseReady, setIsPoseReady] = useState(false);
@@ -387,27 +158,20 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
   const [reviewViewMode, setReviewViewMode] = useState<"humanoid" | "skeleton">("skeleton");
   const [isStopped, setIsStopped] = useState(false);
   const [sessionName, setSessionName] = useState("");
-  /** When true, detection loop stops (after stop / save / discard until start again). */
   const [isDetectionPaused, setIsDetectionPaused] = useState(false);
-  /** When replaying from library, show session name, view mode, sensitivity for review UI */
   const [replaySessionInfo, setReplaySessionInfo] = useState<{
     name: string;
     viewMode: ViewMode;
     sensitivityPercent?: number;
   } | null>(null);
-  /** Toggle alignment grid (level/tilt reference) over the camera view. */
   const [showAlignmentGrid, setShowAlignmentGrid] = useState(false);
-  /** Toggle body position guide overlay for correct posture alignment. */
   const [showBodyGuide, setShowBodyGuide] = useState(false);
-  /** Ref copy of recording when stopped, so Save still works if state is cleared (e.g. re-render). */
   const stoppedRecordingRef = useRef<SessionRecording | null>(null);
-  /** Brief message after save: "Saved" or error text. */
   const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
-  /** True while save is in progress; disables Save button and prevents double-submit. */
   const [isSaving, setIsSaving] = useState(false);
 
-  const baselineRef = useRef<PostureBaseline | null>(null);
-  const sideViewBaselineRef = useRef<SideViewBaseline | null>(null);
+  const baselineRef = useRef<FrontBaseline | null>(null);
+  const sideViewBaselineRef = useRef<SideBaseline | null>(null);
   const isCalibratedRef = useRef(false);
   const viewModeRef = useRef<ViewMode>("front");
   const sensitivityRef = useRef(50);
@@ -421,6 +185,13 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
     sensitivityRef.current = sensitivity;
   }, [baseline, sideViewBaseline, isCalibrated, viewMode, sensitivity]);
 
+  // Create/recreate engine when instrument or viewMode changes
+  useEffect(() => {
+    engineRef.current = EngineFactory.create(instrumentProp, {
+      view: viewMode,
+    });
+  }, [instrumentProp, viewMode]);
+
   // Piano defaults to side view (one-time when instrument is known)
   useEffect(() => {
     if (instrumentProp !== "piano" || appliedInstrumentViewRef.current) return;
@@ -432,7 +203,7 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
     isRecordingRef.current = isRecording;
   }, [isRecording]);
 
-  // Load session from library when replayId is provided (e.g. from /studio?replay=id)
+  // Load session from library when replayId is provided
   useEffect(() => {
     if (!replayId || typeof window === "undefined") return;
     const session = getSessionById(replayId);
@@ -558,11 +329,14 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
     if (world.length < 25) return;
     setCalibrationRejectedReason(null);
     const mode = viewModeRef.current;
+    const engine = engineRef.current;
+    const maxAsymmetry = engine?.thresholds.calibrationMaxAsymmetryM ?? 0.025;
+
     if (mode === "front") {
       const shoulderAsymmetry = Math.abs(
         world[SHOULDER_LEFT].y - world[SHOULDER_RIGHT].y
       );
-      if (shoulderAsymmetry > CALIBRATION_MAX_ASYMMETRY_M) {
+      if (shoulderAsymmetry > maxAsymmetry) {
         setCalibrationRejectedReason(
           "Shoulders look uneven. Relax, level them, then click Calibrate again."
         );
@@ -578,7 +352,7 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
         world[SHOULDER_RIGHT],
         world[HIP_RIGHT]
       );
-      const bl: PostureBaseline = {
+      const bl: FrontBaseline = {
         angleLeft,
         angleRight,
         earYLeft: world[EAR_LEFT].y,
@@ -603,7 +377,7 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
         world[SHOULDER_RIGHT],
         world[HIP_RIGHT]
       );
-      setSideViewBaseline({
+      const sbl: SideBaseline = {
         distLeft,
         distRight,
         angleLeft,
@@ -614,7 +388,13 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
         earYRight: world[EAR_RIGHT].y,
         earShoulderVertLeft: Math.abs(world[EAR_LEFT].y - world[SHOULDER_LEFT].y),
         earShoulderVertRight: Math.abs(world[EAR_RIGHT].y - world[SHOULDER_RIGHT].y),
-      });
+      };
+      // For Piano side view: also compute wrist-shoulder distance
+      if (instrumentProp === "piano") {
+        sbl.wristShoulderDistLeft = dist3(world[WRIST_LEFT], world[SHOULDER_LEFT]);
+        sbl.wristShoulderDistRight = dist3(world[WRIST_RIGHT], world[SHOULDER_RIGHT]);
+      }
+      setSideViewBaseline(sbl);
       setBaseline(null);
     }
     setIsCalibrated(true);
@@ -622,7 +402,7 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
     leanFramesRef.current = 0;
     tensionFramesRef.current = 0;
     setIsDetectionPaused(false);
-  }, []);
+  }, [instrumentProp]);
 
   const handleToggleViewMode = useCallback(() => {
     setViewMode((prev) => (prev === "front" ? "side" : "front"));
@@ -726,7 +506,6 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
 
   const handleBackToLive = useCallback(() => {
     setIsPlayback(false);
-    // Stay in stopped state — user can still save/continue/discard
   }, []);
 
   const handleStartNewSession = useCallback(() => {
@@ -794,100 +573,83 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
             const mode = viewModeRef.current;
             const base = baselineRef.current;
             const sideBase = sideViewBaselineRef.current;
+            const engine = engineRef.current;
             let quality = 1;
-            /** Stored in recording: drops below threshold when we show an alert so chart/summary match alerts. */
             let recordedQuality = 1;
-            /** Alert type for this frame: used for replay tension/lean coloring. */
             let frameAlertType: "lean" | "tension" | null = null;
-            if (isCalibratedRef.current && mode === "front" && base != null) {
-              const { leanRaw, tensionRaw, isShrug, quality: q } = evaluatePostureFront(
-                worldSmoothed,
-                base,
-                sensitivityRef.current
-              );
-              quality = q;
-              qualityRef.current = quality;
 
-              const leanCounts = leanRaw && !isShrug;
-              const tensionCounts = tensionRaw;
-              if (leanCounts) {
-                leanFramesRef.current += 1;
-                tensionFramesRef.current = 0;
-              } else if (tensionCounts) {
-                tensionFramesRef.current += 1;
-                leanFramesRef.current = 0;
-              } else {
-                leanFramesRef.current = 0;
-                tensionFramesRef.current = 0;
-              }
+            if (isCalibratedRef.current && engine != null) {
+              const currentBaseline = mode === "front" ? base : sideBase;
+              if (currentBaseline != null) {
+                const engineResult = engine.validate({
+                  landmarks: worldSmoothed,
+                  baseline: currentBaseline,
+                  sensitivity: sensitivityRef.current,
+                });
+                const { leanRaw, tensionRaw, isShrug, quality: q } = engineResult;
+                quality = q;
+                qualityRef.current = quality;
 
-              const leanPersisted = leanFramesRef.current >= PERSISTENCE_FRAMES;
-              const tensionPersisted = tensionFramesRef.current >= PERSISTENCE_FRAMES;
-              frameAlertType = leanPersisted ? "lean" : tensionPersisted ? "tension" : null;
-              setAlertType((prev) => {
-                if (leanPersisted) return "lean";
-                if (tensionPersisted) return "tension";
-                return null;
-              });
-              if (leanPersisted || tensionPersisted) {
-                if (tensionPersisted) {
-                  const asymmetry = Math.abs(
-                    worldSmoothed[SHOULDER_LEFT].y - worldSmoothed[SHOULDER_RIGHT].y
-                  );
-                  const baseAsymmetry = Math.abs(
-                    base.shoulderYLeft - base.shoulderYRight
-                  );
-                  const alertThreshold = Math.max(
-                    baseAsymmetry + ASYMMETRY_DEVIATION_ABOVE_BASELINE_M,
-                    MIN_ASYMMETRY_ALERT_M
-                  );
-                  const severityRange = Math.max(
-                    TENSION_SEVERITY_MAX_ASYMMETRY_M - alertThreshold,
-                    0.01
-                  );
-                  const tensionSeverity = Math.max(
-                    0.5,
-                    0.87 -
-                      ((asymmetry - alertThreshold) / severityRange) * 0.37
-                  );
-                  recordedQuality = Math.min(quality, tensionSeverity);
+                // Persistence filtering
+                const leanCounts = leanRaw && !isShrug;
+                const tensionCounts = tensionRaw;
+                if (leanCounts && !tensionCounts) {
+                  leanFramesRef.current += 1;
+                  tensionFramesRef.current = 0;
+                } else if (tensionCounts) {
+                  tensionFramesRef.current += 1;
+                  leanFramesRef.current = 0;
                 } else {
-                  recordedQuality = Math.min(quality, QUALITY_ALERT_THRESHOLD - 0.01);
+                  leanFramesRef.current = 0;
+                  tensionFramesRef.current = 0;
+                }
+
+                const leanPersisted = leanFramesRef.current >= PERSISTENCE_FRAMES;
+                const tensionPersisted = tensionFramesRef.current >= PERSISTENCE_FRAMES;
+                frameAlertType = leanPersisted ? "lean" : tensionPersisted ? "tension" : null;
+                setAlertType(() => {
+                  if (leanPersisted) return "lean";
+                  if (tensionPersisted) return "tension";
+                  return null;
+                });
+
+                // Recorded quality for session chart
+                if (leanPersisted || tensionPersisted) {
+                  if (tensionPersisted && mode === "front" && base != null) {
+                    const asymmetry = Math.abs(
+                      worldSmoothed[SHOULDER_LEFT].y - worldSmoothed[SHOULDER_RIGHT].y
+                    );
+                    const baseAsymmetry = Math.abs(
+                      base.shoulderYLeft - base.shoulderYRight
+                    );
+                    const thresholds = engine.thresholds;
+                    const alertThreshold = Math.max(
+                      baseAsymmetry + thresholds.asymmetryDeviationM,
+                      thresholds.minAsymmetryAlertM
+                    );
+                    const severityRange = Math.max(
+                      TENSION_SEVERITY_MAX_ASYMMETRY_M - alertThreshold,
+                      0.01
+                    );
+                    const tensionSeverity = Math.max(
+                      0.5,
+                      0.87 -
+                        ((asymmetry - alertThreshold) / severityRange) * 0.37
+                    );
+                    recordedQuality = Math.min(quality, tensionSeverity);
+                  } else {
+                    recordedQuality = Math.min(quality, QUALITY_ALERT_THRESHOLD - 0.01);
+                  }
+                } else {
+                  recordedQuality = quality;
                 }
               } else {
+                qualityRef.current = 1;
+                leanFramesRef.current = 0;
+                tensionFramesRef.current = 0;
+                setAlertType(null);
                 recordedQuality = quality;
               }
-            } else if (isCalibratedRef.current && mode === "side" && sideBase != null) {
-              const { leanRaw, tensionRaw, quality: q } = evaluatePostureSide(
-                worldSmoothed,
-                sideBase,
-                sensitivityRef.current
-              );
-              quality = q;
-              qualityRef.current = quality;
-
-              if (leanRaw && !tensionRaw) {
-                leanFramesRef.current += 1;
-                tensionFramesRef.current = 0;
-              } else if (tensionRaw) {
-                tensionFramesRef.current += 1;
-                leanFramesRef.current = 0;
-              } else {
-                leanFramesRef.current = 0;
-                tensionFramesRef.current = 0;
-              }
-              const leanPersisted = leanFramesRef.current >= PERSISTENCE_FRAMES;
-              const tensionPersisted = tensionFramesRef.current >= PERSISTENCE_FRAMES;
-              frameAlertType = leanPersisted ? "lean" : tensionPersisted ? "tension" : null;
-              setAlertType((prev) => {
-                if (leanPersisted) return "lean";
-                if (tensionPersisted) return "tension";
-                return null;
-              });
-              recordedQuality =
-                leanPersisted || tensionPersisted
-                  ? Math.min(quality, QUALITY_ALERT_THRESHOLD - 0.01)
-                  : quality;
             } else {
               qualityRef.current = 1;
               leanFramesRef.current = 0;
@@ -1250,7 +1012,7 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
               </div>
             )}
 
-            {/* Sensitivity slider — user sets threshold; 50% = recommended balance (locked during recording) */}
+            {/* Sensitivity slider */}
             <div className={`flex flex-col gap-1 ${isRecording ? "opacity-60 pointer-events-none" : ""}`}>
               <label htmlFor="sensitivity" className="text-sm text-zinc-400 flex justify-between">
                 <span>Sensitivity</span>
@@ -1388,7 +1150,7 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
             </>
           )}
 
-          {/* Save feedback: prominent success banner or error */}
+          {/* Save feedback */}
           {saveFeedback && (
             <div
               role="status"
@@ -1408,7 +1170,7 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
             </div>
           )}
 
-          {/* Replaying from library: no Back to Live / Start New Session — review-only UI below */}
+          {/* Replaying from library: review-only UI below */}
           {isPlayback && replaySessionInfo && null}
 
           {/* Posture status text */}
@@ -1438,7 +1200,7 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
         </div>
       )}
 
-      {/* Review session (from library): data panel + graph only */}
+      {/* Review session (from library) */}
       {isPlayback && replaySessionInfo && sessionRecording && sessionRecording.frames.length > 0 && (
         <div className="w-full max-w-[640px] flex flex-col gap-4">
           <div className="rounded-xl bg-zinc-900/80 border border-zinc-700 p-4">
