@@ -1,0 +1,22 @@
+# Virtuoso Studio - Zero-Cost Prototype Rules
+
+## 1. Project Identity
+- **Product:** Virtuoso Studio (AI-Powered Music Practice)
+- **Status:** Prototyping Phase (Zero Upfront Cost)
+- **Domain:** virtuosostudio.vercel.app (Pending validation)
+
+## 2. Technical Strategy: "The $0 Stack"
+- **Framework:** Next.js 15 (App Router), TypeScript, Tailwind CSS.
+- **AI Processing:** 100% Client-Side via MediaPipe. NO server-side GPU/inference.
+- **Database:** Local-First. Use '@electric-sql/pglite' with 'idb://' (IndexedDB) for browser persistence. Do not initialize cloud Supabase until Phase 2.
+- **Payments:** Use Stripe 'Test Mode' ONLY. Do not use live keys.
+
+## 3. Engineering Constraints
+- **Performance:** Maintain 60fps. MediaPipe Pose must run in a Web Worker to keep the UI responsive.
+- **Privacy:** Absolutely no video frame storage or transmission. Only Landmark JSON metadata allowed.
+- **Dependencies:** Avoid heavy libraries. Stick to 'lucide-react' for icons and 'framer-motion' for minimal UI feedback.
+
+## 4. Posture Logic Specifics
+- **Thresholds:** Ear-to-Shoulder collapse > 15% (Slouch), Shoulder-to-Shoulder tilt > 10% (Tension).
+- **Smoothing:** Use a 0.3 alpha Low-Pass Filter on all landmarks to prevent jitter.
+- **Safety:** Always display the "Educational Tool Only" disclaimer on the webcam overlay.
