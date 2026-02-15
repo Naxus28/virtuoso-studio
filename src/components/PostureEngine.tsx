@@ -239,8 +239,12 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
   const [playbackSlouch, setPlaybackSlouch] = useState(false);
   const [isStopped, setIsStopped] = useState(false);
   const [sessionName, setSessionName] = useState("");
-  /** When replaying from library, show session name and view mode in the overlay */
-  const [replaySessionInfo, setReplaySessionInfo] = useState<{ name: string; viewMode: ViewMode } | null>(null);
+  /** When replaying from library, show session name, view mode, sensitivity for review UI */
+  const [replaySessionInfo, setReplaySessionInfo] = useState<{
+    name: string;
+    viewMode: ViewMode;
+    sensitivityPercent?: number;
+  } | null>(null);
 
   const baselineRef = useRef<PostureBaseline | null>(null);
   const sideViewBaselineRef = useRef<SideViewBaseline | null>(null);
@@ -267,7 +271,11 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
     if (session?.recording) {
       setSessionRecording(session.recording);
       setIsPlayback(true);
-      setReplaySessionInfo({ name: session.name, viewMode: session.viewMode ?? (session.view === "side" ? "side" : "front") });
+      setReplaySessionInfo({
+        name: session.name,
+        viewMode: session.viewMode ?? (session.view === "side" ? "side" : "front"),
+        sensitivityPercent: session.sensitivityPercent,
+      });
       playbackStartTimeRef.current = performance.now();
     }
   }, [replayId]);
@@ -461,10 +469,15 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
 
   const handleSaveSession = useCallback(() => {
     if (!sessionRecording) return;
+    const pct = Math.round(
+      SENSITIVITY_MIN_PCT +
+        (sensitivityRef.current / 100) * (SENSITIVITY_MAX_PCT - SENSITIVITY_MIN_PCT)
+    );
     saveSession({
       name: sessionName.trim() || "Unnamed Session",
       viewMode: viewModeRef.current,
       recording: sessionRecording,
+      sensitivityPercent: pct,
     });
     setSessionRecording(null);
     setIsStopped(false);
@@ -543,6 +556,8 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
             const base = baselineRef.current;
             const sideBase = sideViewBaselineRef.current;
             let quality = 1;
+            /** Stored in recording: drops below threshold when we show an alert so chart/summary match alerts. */
+            let recordedQuality = 1;
             if (isCalibratedRef.current && mode === "front" && base != null) {
               const { leanRaw, tensionRaw, isShrug, quality: q } = evaluatePostureFront(
                 worldSmoothed,
@@ -572,6 +587,10 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
                 if (tensionPersisted) return "tension";
                 return null;
               });
+              recordedQuality =
+                leanPersisted || tensionPersisted
+                  ? Math.min(quality, QUALITY_ALERT_THRESHOLD - 0.01)
+                  : quality;
             } else if (isCalibratedRef.current && mode === "side" && sideBase != null) {
               const ratioThreshold = sensitivityToRatioThreshold(sensitivityRef.current);
               const { leanRaw, quality: q } = evaluatePostureSide(
@@ -591,18 +610,23 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
               }
               const leanPersisted = leanFramesRef.current >= PERSISTENCE_FRAMES;
               setAlertType(leanPersisted ? "lean" : null);
+              recordedQuality =
+                leanPersisted
+                  ? Math.min(quality, QUALITY_ALERT_THRESHOLD - 0.01)
+                  : quality;
             } else {
               qualityRef.current = 1;
               leanFramesRef.current = 0;
               tensionFramesRef.current = 0;
               setAlertType(null);
+              recordedQuality = quality;
             }
 
             if (isRecordingRef.current) {
               sessionRecorderRef.current.addFrame(
                 Date.now(),
                 smoothed,
-                quality
+                recordedQuality
               );
             }
           }
@@ -747,70 +771,74 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
       </div>
 
       <div className="w-full max-w-[640px] space-y-4">
-        {/* View mode toggle + calibrate */}
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className={`inline-flex rounded-lg bg-zinc-800 border border-zinc-700 p-0.5 ${isRecording ? "opacity-50 pointer-events-none" : ""}`} role="radiogroup" aria-label="Camera view">
-            {(["front", "side"] as const).map((mode) => (
+        {/* View mode toggle + calibrate — hidden during replay */}
+        {!isPlayback && (
+          <>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className={`inline-flex rounded-lg bg-zinc-800 border border-zinc-700 p-0.5 ${isRecording ? "opacity-50 pointer-events-none" : ""}`} role="radiogroup" aria-label="Camera view">
+                {(["front", "side"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    role="radio"
+                    aria-checked={viewMode === mode}
+                    disabled={isRecording}
+                    onClick={() => {
+                      if (viewMode !== mode) handleToggleViewMode();
+                    }}
+                    className={`relative inline-flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-medium transition-all ${
+                      viewMode === mode
+                        ? "bg-emerald-600 text-white shadow-sm"
+                        : "text-zinc-400 hover:text-zinc-100"
+                    }`}
+                  >
+                    <Camera size={14} />
+                    {mode === "front" ? "Front" : "Side"}
+                  </button>
+                ))}
+              </div>
               <button
-                key={mode}
                 type="button"
-                role="radio"
-                aria-checked={viewMode === mode}
-                disabled={isRecording}
-                onClick={() => {
-                  if (viewMode !== mode) handleToggleViewMode();
-                }}
-                className={`relative inline-flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-medium transition-all ${
-                  viewMode === mode
-                    ? "bg-emerald-600 text-white shadow-sm"
-                    : "text-zinc-400 hover:text-zinc-100"
-                }`}
+                onClick={handleCalibrate}
+                disabled={!isPoseReady || landmarks.length === 0 || isRecording}
+                className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50 disabled:pointer-events-none"
               >
-                <Camera size={14} />
-                {mode === "front" ? "Front" : "Side"}
+                <Activity size={18} />
+                Calibrate
               </button>
-            ))}
-          </div>
-          <button
-            type="button"
-            onClick={handleCalibrate}
-            disabled={!isPoseReady || landmarks.length === 0 || isRecording}
-            className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50 disabled:pointer-events-none"
-          >
-            <Activity size={18} />
-            Calibrate
-          </button>
-        </div>
-        {/* Calibration hint */}
-        {!isCalibrated && !replaySessionInfo && (
-          <div className="rounded-lg bg-zinc-800/60 border border-zinc-700 p-3 text-sm text-zinc-400">
-            Sit in your best posture and click <strong className="text-zinc-200">Calibrate</strong> to set your baseline. The app will alert you when you deviate from this position.
-          </div>
-        )}
+            </div>
+            {/* Calibration hint */}
+            {!isCalibrated && !replaySessionInfo && (
+              <div className="rounded-lg bg-zinc-800/60 border border-zinc-700 p-3 text-sm text-zinc-400">
+                Sit in your best posture and click <strong className="text-zinc-200">Calibrate</strong> to set your baseline. The app will alert you when you deviate from this position.
+              </div>
+            )}
 
-        {/* Sensitivity slider */}
-        <div className="flex flex-col gap-1">
-          <label htmlFor="sensitivity" className="text-sm text-zinc-400 flex justify-between">
-            <span>Sensitivity</span>
-            <span>
-              {Math.round(SENSITIVITY_MIN_PCT + (sensitivity / 100) * (SENSITIVITY_MAX_PCT - SENSITIVITY_MIN_PCT))}% shrink
-            </span>
-          </label>
-          <input
-            id="sensitivity"
-            type="range"
-            min={0}
-            max={100}
-            value={sensitivity}
-            onChange={(e) => setSensitivity(Number(e.target.value))}
-            className="w-full h-2 rounded-lg appearance-none bg-zinc-700 accent-emerald-500"
-            aria-label="Sensitivity: 5% very strict to 25% very loose"
-          />
-          <div className="flex justify-between text-xs text-zinc-500">
-            <span>Very Strict (5%)</span>
-            <span>Very Loose (25%)</span>
-          </div>
-        </div>
+            {/* Sensitivity slider */}
+            <div className="flex flex-col gap-1">
+              <label htmlFor="sensitivity" className="text-sm text-zinc-400 flex justify-between">
+                <span>Sensitivity</span>
+                <span>
+                  {Math.round(SENSITIVITY_MIN_PCT + (sensitivity / 100) * (SENSITIVITY_MAX_PCT - SENSITIVITY_MIN_PCT))}% shrink
+                </span>
+              </label>
+              <input
+                id="sensitivity"
+                type="range"
+                min={0}
+                max={100}
+                value={sensitivity}
+                onChange={(e) => setSensitivity(Number(e.target.value))}
+                className="w-full h-2 rounded-lg appearance-none bg-zinc-700 accent-emerald-500"
+                aria-label="Sensitivity: 5% very strict to 25% very loose"
+              />
+              <div className="flex justify-between text-xs text-zinc-500">
+                <span>Very Strict (5%)</span>
+                <span>Very Loose (25%)</span>
+              </div>
+            </div>
+          </>
+        )}
 
         {/* Session controls */}
         <div className="flex flex-wrap items-center justify-center gap-3">
@@ -920,26 +948,8 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
             </>
           )}
 
-          {/* Replaying from library */}
-          {isPlayback && replaySessionInfo && (
-            <>
-              <button
-                type="button"
-                onClick={handleBackToLive}
-                className="inline-flex items-center gap-2 rounded-lg bg-zinc-600 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-500"
-              >
-                Back to Live
-              </button>
-              <button
-                type="button"
-                onClick={handleStartNewSession}
-                className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
-              >
-                <Play size={18} />
-                Start New Session
-              </button>
-            </>
-          )}
+          {/* Replaying from library: no Back to Live / Start New Session — review-only UI below */}
+          {isPlayback && replaySessionInfo && null}
 
           {/* Posture status text */}
           {isCalibrated && showLiveView && !isStopped && (
@@ -965,6 +975,76 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
             Session Stats
           </h3>
           <SessionStats recording={sessionRecording} />
+        </div>
+      )}
+
+      {/* Review session (from library): data panel + graph only */}
+      {isPlayback && replaySessionInfo && sessionRecording && sessionRecording.frames.length > 0 && (
+        <div className="w-full max-w-[640px] flex flex-col gap-4">
+          <div className="rounded-xl bg-zinc-900/80 border border-zinc-700 p-4">
+            <h3 className="text-sm font-semibold text-zinc-200 mb-3">Session summary</h3>
+            <dl className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-2 text-sm">
+              <div>
+                <dt className="text-zinc-500">Session</dt>
+                <dd className="font-medium text-zinc-100 truncate">{replaySessionInfo.name}</dd>
+              </div>
+              <div>
+                <dt className="text-zinc-500">View</dt>
+                <dd className="font-medium text-zinc-100">
+                  {replaySessionInfo.viewMode === "front" ? "Front (symmetry)" : "Side (alignment)"}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-zinc-500">Duration</dt>
+                <dd className="font-medium text-zinc-100">
+                  {(() => {
+                    const ms = sessionRecording.stoppedAt - sessionRecording.startedAt;
+                    const s = Math.round(ms / 1000);
+                    return s < 60 ? `${s}s` : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+                  })()}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-zinc-500">Good posture</dt>
+                <dd className="font-medium text-emerald-400">
+                  {(() => {
+                    const good = sessionRecording.frames.filter((f) => f.quality >= QUALITY_ALERT_THRESHOLD).length;
+                    const pct = sessionRecording.frames.length
+                      ? Math.round((good / sessionRecording.frames.length) * 100)
+                      : 0;
+                    return `${pct}%`;
+                  })()}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-zinc-500">Alert frames</dt>
+                <dd className="font-medium text-amber-400">
+                  {(() => {
+                    const bad = sessionRecording.frames.filter((f) => f.quality < QUALITY_ALERT_THRESHOLD).length;
+                    const pct = sessionRecording.frames.length
+                      ? Math.round((bad / sessionRecording.frames.length) * 100)
+                      : 0;
+                    return `${pct}%`;
+                  })()}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-zinc-500">Sensitivity</dt>
+                <dd className="font-medium text-zinc-100">
+                  {replaySessionInfo.sensitivityPercent != null
+                    ? `${replaySessionInfo.sensitivityPercent}% shrink`
+                    : "—"}
+                </dd>
+              </div>
+            </dl>
+          </div>
+          <div className="flex flex-col items-center gap-2">
+            <h3 className="text-sm font-medium text-zinc-300 flex items-center gap-2">
+              <BarChart3 size={18} />
+              Posture quality over time
+            </h3>
+            <SessionStats recording={sessionRecording} />
+          </div>
         </div>
       )}
     </div>

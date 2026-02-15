@@ -46,6 +46,9 @@ export interface StoredSession {
 
   /** @deprecated Kept for backward compatibility. Use `view` instead. */
   viewMode?: ViewMode;
+
+  /** Display value for review (e.g. 12 for "12% shrink"). */
+  sensitivityPercent?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +139,8 @@ export function saveSession(payload: {
   handRecording?: HandRecording;
   /** @deprecated Pass `view` instead. */
   viewMode?: ViewMode;
+  /** For review UI: e.g. 12 for "12% shrink". */
+  sensitivityPercent?: number;
 }): StoredSession {
   const viewId: ViewId =
     payload.view ?? (payload.viewMode === "side" ? "side" : "front");
@@ -155,6 +160,7 @@ export function saveSession(payload: {
     savedAt: Date.now(),
     // Keep legacy field so existing UI components don't break
     viewMode: viewId === "side" ? "side" : "front",
+    sensitivityPercent: payload.sensitivityPercent,
   };
 
   const sessions = getStored();
