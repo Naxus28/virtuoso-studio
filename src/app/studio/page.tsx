@@ -14,11 +14,11 @@ function StudioContent() {
     <>
       <div className="absolute top-4 left-4 right-4 flex justify-between items-center">
         <Link
-          href="/"
+          href="/dashboard"
           className="inline-flex items-center gap-2 text-zinc-400 hover:text-zinc-100 text-sm transition-colors"
         >
           <ArrowLeft size={18} />
-          Back to home
+          Back to Dashboard
         </Link>
         <Link
           href="/library"

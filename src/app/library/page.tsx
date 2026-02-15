@@ -5,6 +5,7 @@ import Link from "next/link";
 import { ArrowLeft, Play, FolderOpen } from "lucide-react";
 import { getStoredSessions, deleteSession } from "@/lib/sessionLibrary";
 import type { StoredSession } from "@/lib/sessionLibrary";
+import { ConfirmDeleteModal } from "@/components/ConfirmDeleteModal";
 
 function formatDate(ms: number): string {
   return new Date(ms).toLocaleDateString(undefined, {
@@ -26,6 +27,7 @@ function formatDuration(recording: StoredSession["recording"]): string {
 
 export default function LibraryPage() {
   const [sessions, setSessions] = useState<StoredSession[]>([]);
+  const [deleteTarget, setDeleteTarget] = useState<StoredSession | null>(null);
 
   const refresh = useCallback(() => {
     setSessions(getStoredSessions());
@@ -35,14 +37,21 @@ export default function LibraryPage() {
     refresh();
   }, [refresh]);
 
+  function handleDeleteConfirm() {
+    if (!deleteTarget) return;
+    deleteSession(deleteTarget.id);
+    setDeleteTarget(null);
+    refresh();
+  }
+
   return (
     <main className="min-h-screen flex flex-col items-center p-4 pt-16">
       <Link
-        href="/"
+        href="/dashboard"
         className="absolute top-4 left-4 inline-flex items-center gap-2 text-zinc-400 hover:text-zinc-100 text-sm transition-colors"
       >
         <ArrowLeft size={18} />
-        Back to home
+        Back to Dashboard
       </Link>
 
       <div className="flex items-center gap-2 mb-2">
@@ -76,7 +85,7 @@ export default function LibraryPage() {
               <div className="min-w-0">
                 <p className="font-medium text-zinc-100 truncate">{session.name}</p>
                 <p className="text-zinc-500 text-sm mt-0.5">
-                  {session.viewMode === "front" ? "Front View" : "Side View"} · {formatDuration(session.recording)} · {formatDate(session.savedAt)}
+                  {(session.viewMode ?? session.view) === "front" ? "Front View" : "Side View"} · {formatDuration(session.recording)} · {formatDate(session.savedAt)}
                 </p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
@@ -89,12 +98,7 @@ export default function LibraryPage() {
                 </Link>
                 <button
                   type="button"
-                  onClick={() => {
-                    if (typeof window !== "undefined" && window.confirm("Delete this session?")) {
-                      deleteSession(session.id);
-                      refresh();
-                    }
-                  }}
+                  onClick={() => setDeleteTarget(session)}
                   className="rounded-lg bg-zinc-600 px-3 py-2 text-sm font-medium text-zinc-300 hover:bg-zinc-500 hover:text-zinc-100"
                 >
                   Delete
@@ -112,6 +116,15 @@ export default function LibraryPage() {
         <Play size={16} />
         Open Studio
       </Link>
+
+      {/* Delete confirmation modal */}
+      {deleteTarget && (
+        <ConfirmDeleteModal
+          sessionName={deleteTarget.name}
+          onConfirm={handleDeleteConfirm}
+          onCancel={() => setDeleteTarget(null)}
+        />
+      )}
     </main>
   );
 }

@@ -3,12 +3,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Piano, Guitar, LogOut, Play } from "lucide-react";
+import { Piano, Guitar, LogOut, Play, Trash2 } from "lucide-react";
 import { getUser, updateUser, logout } from "@/lib/auth";
 import type { FakeUser } from "@/lib/auth";
-import { getStoredSessions } from "@/lib/sessionLibrary";
+import { getStoredSessions, deleteSession } from "@/lib/sessionLibrary";
 import type { StoredSession } from "@/lib/sessionLibrary";
 import type { InstrumentId } from "@/lib/posture-engines/EngineFactory";
+import { ConfirmDeleteModal } from "@/components/ConfirmDeleteModal";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -46,6 +47,7 @@ export default function DashboardPage() {
   const [user, setUser] = useState<FakeUser | null>(null);
   const [sessions, setSessions] = useState<StoredSession[]>([]);
   const [ready, setReady] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<StoredSession | null>(null);
 
   const refresh = useCallback(() => {
     setSessions(getStoredSessions().slice(0, 5));
@@ -74,7 +76,16 @@ export default function DashboardPage() {
     router.push("/login");
   }
 
+  function handleDeleteConfirm() {
+    if (!deleteTarget) return;
+    deleteSession(deleteTarget.id);
+    setDeleteTarget(null);
+    refresh();
+  }
+
   if (!ready) return null;
+
+  const initial = user?.name?.charAt(0)?.toUpperCase() ?? "?";
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-zinc-950 via-zinc-900 to-zinc-950 text-zinc-100">
@@ -82,9 +93,14 @@ export default function DashboardPage() {
 
       {/* Top bar */}
       <header className="relative z-10 flex items-center justify-between px-6 py-4 border-b border-zinc-800/50">
-        <p className="text-sm text-zinc-400">
-          Hello, <span className="text-zinc-100 font-medium">{user?.name}</span>
-        </p>
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-full bg-emerald-600 flex items-center justify-center text-sm font-bold text-white">
+            {initial}
+          </div>
+          <p className="text-sm text-zinc-400">
+            Hello, <span className="text-zinc-100 font-medium">{user?.name}</span>
+          </p>
+        </div>
         <button
           type="button"
           onClick={handleLogout}
@@ -159,18 +175,28 @@ export default function DashboardPage() {
                       {session.name}
                     </p>
                     <p className="text-zinc-500 text-sm mt-0.5">
-                      {session.view === "side" ? "Side View" : "Front View"} &middot;{" "}
+                      {(session.view ?? session.viewMode) === "side" ? "Side View" : "Front View"} &middot;{" "}
                       {formatDuration(session.recording)} &middot;{" "}
                       {formatDate(session.savedAt)}
                     </p>
                   </div>
-                  <Link
-                    href={`/studio?replay=${encodeURIComponent(session.id)}`}
-                    className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
-                  >
-                    <Play size={16} />
-                    Replay
-                  </Link>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <Link
+                      href={`/studio?replay=${encodeURIComponent(session.id)}`}
+                      className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
+                    >
+                      <Play size={16} />
+                      Replay
+                    </Link>
+                    <button
+                      type="button"
+                      onClick={() => setDeleteTarget(session)}
+                      className="inline-flex items-center gap-2 rounded-lg bg-zinc-600 px-3 py-2 text-sm font-medium text-zinc-300 hover:bg-zinc-500 hover:text-zinc-100 transition-colors"
+                    >
+                      <Trash2 size={16} />
+                      Delete
+                    </button>
+                  </div>
                 </li>
               ))}
             </ul>
@@ -186,6 +212,15 @@ export default function DashboardPage() {
           )}
         </section>
       </div>
+
+      {/* Delete confirmation modal */}
+      {deleteTarget && (
+        <ConfirmDeleteModal
+          sessionName={deleteTarget.name}
+          onConfirm={handleDeleteConfirm}
+          onCancel={() => setDeleteTarget(null)}
+        />
+      )}
     </main>
   );
 }
