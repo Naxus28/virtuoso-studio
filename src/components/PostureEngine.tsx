@@ -39,6 +39,8 @@ const LEAN_ANGLE_RATIO = 0.88;
 const TENSION_SHOULDER_UP_WORLD_M = 0.005; // ~5mm elevation triggers (catch before you feel it)
 /** Only treat as shrug (don’t alert) when shoulder rises this much with ear stable — so small elevation still = tension */
 const SHRUG_TOLERANCE_WORLD = 0.025; // ~25mm one-sided rise with ear stable = shrug
+/** When vertical ear–shoulder shrinks, if angle (ear-shoulder-hip) also dropped = head tilt/lean, not tension */
+const ANGLE_DROP_FOR_HEAD_POSE = 0.98; // angle < baseline*this → head position (chin up); only unchanged angle = shoulder tension
 /** Quality below this = show alert in playback/chart (0–1) */
 const QUALITY_ALERT_THRESHOLD = 0.88;
 /** Front view: max shoulder height difference (world Y, meters) for symmetry */
@@ -172,20 +174,29 @@ function evaluatePostureFront(
   const shouldersHigh = baselineShoulderY - avgShoulderY > TENSION_SHOULDER_UP_WORLD_M;
   const earNotDropped = avgEarY <= baselineEarY + SHRUG_TOLERANCE_WORLD;
   const shoulderSymmetry = Math.abs(shoulderYLeft - shoulderYRight) <= FRONT_SHOULDER_SYMMETRY_TOLERANCE_M;
-  const tensionFromElevation = shouldersHigh && earNotDropped && !leanRaw && shoulderSymmetry;
-
   const vertLeft = Math.abs(w[EAR_LEFT].y - w[SHOULDER_LEFT].y);
   const vertRight = Math.abs(w[EAR_RIGHT].y - w[SHOULDER_RIGHT].y);
   const avgVert = (vertLeft + vertRight) / 2;
   const baselineVert = (baseline.earShoulderVertLeft + baseline.earShoulderVertRight) / 2;
   const vertRatio = baselineVert > 1e-6 ? avgVert / baselineVert : 1;
   const ratioThreshold = sensitivityToRatioThreshold(sensitivityPercent);
-  const tensionFromVertical = vertRatio < ratioThreshold && !isShrug;
+  // Angle drops when head tilts down or forward; if angle dropped, it's head pose (lean), not shoulder tension
+  const angleDropped = avgAngle < baselineAngle * ANGLE_DROP_FOR_HEAD_POSE;
+  const verticalShrink = vertRatio < ratioThreshold && !isShrug;
+
+  // Only show "tension" when vertical shrink AND angle did NOT drop (true shoulder hunch, not head-down)
+  const tensionFromElevation =
+    shouldersHigh && earNotDropped && !leanRaw && shoulderSymmetry && !angleDropped;
+  const tensionFromVertical = verticalShrink && !angleDropped;
+
+  // Vertical shrink + angle dropped = head tilt/forward → show lean (chin up), not shoulder message
+  const headDownLean = verticalShrink && angleDropped;
 
   const tensionRaw = tensionFromElevation || tensionFromVertical;
+  const leanRawResolved = leanRaw || headDownLean;
 
   const quality = Math.min(1, avgAngle / baselineAngle);
-  return { leanRaw, tensionRaw, isShrug, quality };
+  return { leanRaw: leanRawResolved, tensionRaw, isShrug, quality };
 }
 
 /** Side view: ear–shoulder distance (7 to 11, 8 to 12) in world; alert when collapse. */
@@ -423,6 +434,7 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
     setAlertType(null);
     leanFramesRef.current = 0;
     tensionFramesRef.current = 0;
+    setIsDetectionPaused(false);
   }, []);
 
   const handleToggleViewMode = useCallback(() => {
@@ -786,14 +798,25 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
               initial={{ opacity: 0, y: 4 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 4 }}
-              className="absolute top-10 left-2 right-2 flex items-center justify-center gap-2 rounded-lg bg-red-500/90 text-white px-3 py-2 text-sm font-medium"
+              className="absolute top-10 left-2 right-2 flex items-start gap-2 rounded-lg bg-red-500/90 text-white px-3 py-2.5 text-sm"
             >
-              <AlertTriangle className="shrink-0" size={18} />
-              {showLiveView && alertType === "tension"
-                ? "Tension Detected"
-                : showLiveView && alertType === "lean"
-                  ? "Lean Detected"
-                  : "Tension Alert"}
+              <AlertTriangle className="shrink-0 mt-0.5" size={18} />
+              <div className="flex flex-col gap-0.5">
+                <span className="font-medium">
+                  {showLiveView && alertType === "tension"
+                    ? "Tension detected"
+                    : showLiveView && alertType === "lean"
+                      ? "Lean detected"
+                      : "Tension alert"}
+                </span>
+                <span className="text-red-100 text-xs">
+                  {showLiveView && alertType === "tension"
+                    ? "Relax your shoulders and level them — avoid raising or hiking one side."
+                    : showLiveView && alertType === "lean"
+                      ? "Sit up and align ear over shoulder over hip."
+                      : "Relax your shoulders and level them."}
+                </span>
+              </div>
             </motion.div>
           )}
         </AnimatePresence>
