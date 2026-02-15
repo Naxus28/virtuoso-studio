@@ -10,6 +10,8 @@ export type SessionFrame = {
   landmarks: Landmark[];
   /** 0 = worst slouch, 1 = good posture (e.g. min(1, earShoulderDist / baseline)) */
   quality: number;
+  /** When quality is below threshold: "lean" = head tilt (red on neck), "tension" = shoulders (red on shoulders) */
+  alertType?: "lean" | "tension" | null;
 };
 
 export type SessionRecording = {
@@ -40,12 +42,18 @@ export class SessionRecorder {
     return this.getRecording();
   }
 
-  addFrame(timestampMs: number, landmarks: Landmark[], quality: number): void {
+  addFrame(
+    timestampMs: number,
+    landmarks: Landmark[],
+    quality: number,
+    alertType?: "lean" | "tension" | null
+  ): void {
     if (!this.isRecording || landmarks.length === 0) return;
     this.frames.push({
       timestamp: timestampMs,
       landmarks: landmarks.map((lm) => ({ ...lm })),
       quality,
+      alertType: alertType ?? undefined,
     });
   }
 

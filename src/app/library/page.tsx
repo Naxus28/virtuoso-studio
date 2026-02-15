@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Play, FolderOpen } from "lucide-react";
-import { getStoredSessions, deleteSession } from "@/lib/sessionLibrary";
+import { ArrowLeft, Play, FolderOpen, Piano, Guitar, Activity } from "lucide-react";
+import { getStoredSessions, deleteSession, getInstrumentLabel } from "@/lib/sessionLibrary";
 import type { StoredSession } from "@/lib/sessionLibrary";
+import type { InstrumentId } from "@/lib/posture-engines/EngineFactory";
 import { ConfirmDeleteModal } from "@/components/ConfirmDeleteModal";
 
 function formatDate(ms: number): string {
@@ -25,6 +26,21 @@ function formatDuration(recording: StoredSession["recording"]): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+const INSTRUMENT_ORDER: InstrumentId[] = ["piano", "guitar", "generic"];
+
+function groupSessionsByInstrument(sessions: StoredSession[]): Map<InstrumentId, StoredSession[]> {
+  const map = new Map<InstrumentId, StoredSession[]>();
+  for (const id of INSTRUMENT_ORDER) {
+    map.set(id, []);
+  }
+  for (const s of sessions) {
+    const id = (s.instrument ?? "generic") as InstrumentId;
+    if (!map.has(id)) map.set(id, []);
+    map.get(id)!.push(s);
+  }
+  return map;
+}
+
 export default function LibraryPage() {
   const [sessions, setSessions] = useState<StoredSession[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<StoredSession | null>(null);
@@ -32,6 +48,8 @@ export default function LibraryPage() {
   const refresh = useCallback(() => {
     setSessions(getStoredSessions());
   }, []);
+
+  const byInstrument = useMemo(() => groupSessionsByInstrument(sessions), [sessions]);
 
   useEffect(() => {
     refresh();
@@ -76,37 +94,53 @@ export default function LibraryPage() {
           </Link>
         </div>
       ) : (
-        <ul className="w-full max-w-2xl space-y-3">
-          {sessions.map((session) => (
-            <li
-              key={session.id}
-              className="rounded-xl bg-zinc-900/80 border border-zinc-700 p-4 flex flex-wrap items-center justify-between gap-3"
-            >
-              <div className="min-w-0">
-                <p className="font-medium text-zinc-100 truncate">{session.name}</p>
-                <p className="text-zinc-500 text-sm mt-0.5">
-                  {(session.viewMode ?? session.view) === "front" ? "Front View" : "Side View"} · {formatDuration(session.recording)} · {formatDate(session.savedAt)}
-                </p>
-              </div>
-              <div className="flex items-center gap-2 shrink-0">
-                <Link
-                  href={`/studio?replay=${encodeURIComponent(session.id)}`}
-                  className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
-                >
-                  <Play size={16} />
-                  Replay
-                </Link>
-                <button
-                  type="button"
-                  onClick={() => setDeleteTarget(session)}
-                  className="rounded-lg bg-zinc-600 px-3 py-2 text-sm font-medium text-zinc-300 hover:bg-zinc-500 hover:text-zinc-100"
-                >
-                  Delete
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
+        <div className="w-full max-w-2xl space-y-8">
+          {INSTRUMENT_ORDER.map((instrumentId) => {
+            const list = byInstrument.get(instrumentId) ?? [];
+            if (list.length === 0) return null;
+            const label = getInstrumentLabel(instrumentId);
+            const Icon = instrumentId === "piano" ? Piano : instrumentId === "guitar" ? Guitar : Activity;
+            return (
+              <section key={instrumentId}>
+                <h2 className="flex items-center gap-2 text-lg font-semibold text-zinc-200 mb-3">
+                  <Icon size={20} className="text-emerald-400" />
+                  {label}
+                </h2>
+                <ul className="space-y-3">
+                  {list.map((session) => (
+                    <li
+                      key={session.id}
+                      className="rounded-xl bg-zinc-900/80 border border-zinc-700 p-4 flex flex-wrap items-center justify-between gap-3"
+                    >
+                      <div className="min-w-0">
+                        <p className="font-medium text-zinc-100 truncate">{session.name}</p>
+                        <p className="text-zinc-500 text-sm mt-0.5">
+                          {(session.viewMode ?? session.view) === "front" ? "Front View" : "Side View"} · {formatDuration(session.recording)} · {formatDate(session.savedAt)}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <Link
+                          href={`/studio?replay=${encodeURIComponent(session.id)}`}
+                          className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
+                        >
+                          <Play size={16} />
+                          Replay
+                        </Link>
+                        <button
+                          type="button"
+                          onClick={() => setDeleteTarget(session)}
+                          className="rounded-lg bg-zinc-600 px-3 py-2 text-sm font-medium text-zinc-300 hover:bg-zinc-500 hover:text-zinc-100"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            );
+          })}
+        </div>
       )}
 
       <Link

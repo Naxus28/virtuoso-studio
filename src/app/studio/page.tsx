@@ -1,14 +1,22 @@
 "use client";
 
-import { Suspense } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { PostureEngine } from "@/components/PostureEngine";
 import Link from "next/link";
 import { ArrowLeft, FolderOpen } from "lucide-react";
+import { getUser } from "@/lib/auth";
+import type { InstrumentId } from "@/lib/posture-engines/EngineFactory";
 
 function StudioContent() {
   const searchParams = useSearchParams();
   const replayId = searchParams.get("replay");
+  const [instrument, setInstrument] = useState<InstrumentId>("generic");
+
+  useEffect(() => {
+    const user = getUser();
+    if (user?.instrument) setInstrument(user.instrument);
+  }, []);
 
   return (
     <>
@@ -34,7 +42,7 @@ function StudioContent() {
       <p className="text-zinc-400 text-sm mb-6">
         Zero-Cost Prototype — Posture feedback
       </p>
-      <PostureEngine replayId={replayId} />
+      <PostureEngine replayId={replayId} instrument={instrument} />
     </>
   );
 }
