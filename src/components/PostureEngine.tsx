@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { SessionRecorder } from "@/lib/SessionRecorder";
 import type { SessionRecording } from "@/lib/SessionRecorder";
+import { saveSession, getSessionById } from "@/lib/sessionLibrary";
 import { SessionStats } from "@/components/SessionStats";
 import { drawSkeleton } from "./PostureEngine.draw";
 
@@ -33,12 +34,12 @@ const PERSISTENCE_MS = 500;
 const PERSISTENCE_FRAMES = Math.max(1, Math.round((PERSISTENCE_MS / 1000) * 30));
 /** Lean: angle (ear-shoulder-hip) below baseline * this = head forward */
 const LEAN_ANGLE_RATIO = 0.88;
-/** Tension: shoulders elevated vs baseline (world Y, meters) */
-const TENSION_SHOULDER_UP_WORLD_M = 0.02;
+/** Tension: shoulders elevated vs baseline (world Y). Lower = more sensitive to subtle tension. */
+const TENSION_SHOULDER_UP_WORLD_M = 0.005; // ~5mm elevation triggers (catch before you feel it)
+/** Only treat as shrug (don’t alert) when shoulder rises this much with ear stable — so small elevation still = tension */
+const SHRUG_TOLERANCE_WORLD = 0.025; // ~25mm one-sided rise with ear stable = shrug
 /** Quality below this = show alert in playback/chart (0–1) */
 const QUALITY_ALERT_THRESHOLD = 0.88;
-/** Side view: alert when ear-shoulder distance drops below this ratio of baseline */
-const SIDE_VIEW_DISTANCE_RATIO = 0.85;
 /** Front view: max shoulder height difference (world Y, meters) for symmetry */
 const FRONT_SHOULDER_SYMMETRY_TOLERANCE_M = 0.03;
 
@@ -115,8 +116,8 @@ export type PostureBaseline = {
   earShoulderVertRight: number;
 };
 
-/** Sensitivity 0–100: 0 = 5% shrink (very strict), 100 = 25% shrink (very loose). */
-export const SENSITIVITY_MIN_PCT = 5;
+/** Sensitivity 0–100: 0 = 1% shrink (very strict), 100 = 25% shrink (very loose). */
+export const SENSITIVITY_MIN_PCT = 1;
 export const SENSITIVITY_MAX_PCT = 25;
 
 /** Side view: baseline ear–shoulder 3D distances (meters). */
@@ -129,12 +130,11 @@ export type PostureAlertType = null | "lean" | "tension";
 
 export type ViewMode = "front" | "side";
 
-const SHRUG_TOLERANCE_WORLD = 0.02; // meters
 
-/** Sensitivity 0–100 → ratio threshold (trigger when ear-shoulder shrinks below this). 0 = 0.95 (5%), 100 = 0.75 (25%). */
+/** Sensitivity 0–100 → ratio threshold (trigger when ear-shoulder shrinks below this). 0 = 1%, 100 = 25%. */
 function sensitivityToRatioThreshold(sensitivityPercent: number): number {
   const pct = Math.max(0, Math.min(100, sensitivityPercent));
-  return 0.95 - (pct / 100) * 0.2; // 5% shrink → 0.95, 25% shrink → 0.75
+  return 0.99 - (pct / 100) * 0.24; // 1% shrink → 0.99, 25% shrink → 0.75
 }
 
 /** Front view: angle + shoulder symmetry + vertical compression (world coords). */
@@ -186,7 +186,8 @@ function evaluatePostureFront(
 /** Side view: ear–shoulder distance (7 to 11, 8 to 12) in world; alert when collapse. */
 function evaluatePostureSide(
   w: WorldLandmark[],
-  baseline: SideViewBaseline
+  baseline: SideViewBaseline,
+  ratioThreshold: number
 ): { leanRaw: boolean; tensionRaw: boolean; isShrug: boolean; quality: number } {
   if (w.length < 25) return { leanRaw: false, tensionRaw: false, isShrug: false, quality: 1 };
   const distLeft = dist3(w[EAR_LEFT], w[SHOULDER_LEFT]);
@@ -194,12 +195,17 @@ function evaluatePostureSide(
   const avgDist = (distLeft + distRight) / 2;
   const baselineDist = (baseline.distLeft + baseline.distRight) / 2;
   const ratio = baselineDist > 1e-6 ? avgDist / baselineDist : 1;
-  const leanRaw = ratio < SIDE_VIEW_DISTANCE_RATIO;
+  const leanRaw = ratio < ratioThreshold;
   const quality = Math.min(1, ratio);
   return { leanRaw, tensionRaw: false, isShrug: false, quality };
 }
 
-export function PostureEngine() {
+type PostureEngineProps = {
+  /** When set, load this session from the library and start replay. */
+  replayId?: string | null;
+};
+
+export function PostureEngine({ replayId }: PostureEngineProps = {}) {
   const webcamRef = useRef<Webcam>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const poseRef = useRef<import("@mediapipe/tasks-vision").PoseLandmarker | null>(null);
@@ -230,6 +236,8 @@ export function PostureEngine() {
   const [isPlayback, setIsPlayback] = useState(false);
   const [playbackLandmarks, setPlaybackLandmarks] = useState<Landmark[]>([]);
   const [playbackSlouch, setPlaybackSlouch] = useState(false);
+  /** When replaying from library, show session name and view mode in the overlay */
+  const [replaySessionInfo, setReplaySessionInfo] = useState<{ name: string; viewMode: ViewMode } | null>(null);
 
   const baselineRef = useRef<PostureBaseline | null>(null);
   const sideViewBaselineRef = useRef<SideViewBaseline | null>(null);
@@ -248,6 +256,18 @@ export function PostureEngine() {
   useEffect(() => {
     isRecordingRef.current = isRecording;
   }, [isRecording]);
+
+  // Load session from library when replayId is provided (e.g. from /studio?replay=id)
+  useEffect(() => {
+    if (!replayId || typeof window === "undefined") return;
+    const session = getSessionById(replayId);
+    if (session?.recording) {
+      setSessionRecording(session.recording);
+      setIsPlayback(true);
+      setReplaySessionInfo({ name: session.name, viewMode: session.viewMode });
+      playbackStartTimeRef.current = performance.now();
+    }
+  }, [replayId]);
 
   // MediaPipe/TFLite stderr -> console.log
   useEffect(() => {
@@ -413,6 +433,15 @@ export function PostureEngine() {
     setIsRecording(false);
     setSessionRecording(rec);
     setIsPlayback(false);
+
+    const name = typeof window !== "undefined" ? window.prompt("Name this session (optional):") ?? "" : "";
+    if (typeof window !== "undefined") {
+      saveSession({
+        name: name.trim() || "Unnamed Session",
+        viewMode: viewModeRef.current,
+        recording: rec,
+      });
+    }
   }, []);
 
   const handleReviewSession = useCallback(() => {
@@ -428,6 +457,7 @@ export function PostureEngine() {
   const handleStartNewSession = useCallback(() => {
     setSessionRecording(null);
     setIsPlayback(false);
+    setReplaySessionInfo(null);
   }, []);
 
   const handleDiscardAndRestart = useCallback(() => {
@@ -512,9 +542,11 @@ export function PostureEngine() {
                 return null;
               });
             } else if (isCalibratedRef.current && mode === "side" && sideBase != null) {
+              const ratioThreshold = sensitivityToRatioThreshold(sensitivityRef.current);
               const { leanRaw, quality: q } = evaluatePostureSide(
                 worldSmoothed,
-                sideBase
+                sideBase,
+                ratioThreshold
               );
               quality = q;
               qualityRef.current = quality;
@@ -659,7 +691,9 @@ export function PostureEngine() {
         </div>
         {isPlayback && (
           <div className="absolute top-2 left-2 right-2 text-center text-xs text-amber-200/90 bg-black/50 rounded px-2 py-1">
-            Reviewing session — replay
+            {replaySessionInfo
+              ? `Reviewing: ${replaySessionInfo.name} · ${replaySessionInfo.viewMode === "front" ? "Front" : "Side"} View`
+              : "Reviewing session — replay"}
           </div>
         )}
         <AnimatePresence>
@@ -683,15 +717,21 @@ export function PostureEngine() {
 
       <div className="w-full max-w-[640px] space-y-4">
         <div className="flex flex-wrap items-center justify-center gap-3">
+          <span
+            className="rounded-lg bg-zinc-800 px-3 py-2 text-sm font-medium text-zinc-300 border border-zinc-600"
+            aria-live="polite"
+          >
+            View: {viewMode === "front" ? "Front" : "Side"}
+          </span>
           <button
             type="button"
             onClick={handleToggleViewMode}
             disabled={isRecording}
             className="inline-flex items-center gap-2 rounded-lg bg-zinc-600 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-500 disabled:opacity-50 disabled:pointer-events-none"
-            title={viewMode === "front" ? "Switch to Side View (ear–shoulder distance)" : "Switch to Front View (angle + symmetry)"}
+            title={viewMode === "front" ? "Side view focuses on ear–shoulder distance" : "Front view uses angle + shoulder symmetry"}
           >
             <Camera size={18} />
-            {viewMode === "front" ? "Front View" : "Side View"}
+            {viewMode === "front" ? "Switch to Side View" : "Switch to Front View"}
           </button>
           <button
             type="button"
@@ -703,30 +743,28 @@ export function PostureEngine() {
             Calibrate
           </button>
 
-        {viewMode === "front" && (
-          <div className="w-full flex flex-col gap-1">
-            <label htmlFor="sensitivity" className="text-sm text-zinc-400 flex justify-between">
-              <span>Sensitivity</span>
-              <span>
-                {Math.round(SENSITIVITY_MIN_PCT + (sensitivity / 100) * (SENSITIVITY_MAX_PCT - SENSITIVITY_MIN_PCT))}% shrink
-              </span>
-            </label>
-            <input
-              id="sensitivity"
-              type="range"
-              min={0}
-              max={100}
-              value={sensitivity}
-              onChange={(e) => setSensitivity(Number(e.target.value))}
-              className="w-full h-2 rounded-lg appearance-none bg-zinc-700 accent-emerald-500"
-              aria-label="Sensitivity: 5% very strict to 25% very loose"
-            />
-            <div className="flex justify-between text-xs text-zinc-500">
-              <span>Very Strict (5%)</span>
-              <span>Very Loose (25%)</span>
-            </div>
+        <div className="w-full flex flex-col gap-1 basis-full">
+          <label htmlFor="sensitivity" className="text-sm text-zinc-400 flex justify-between">
+            <span>Sensitivity</span>
+            <span>
+              {Math.round(SENSITIVITY_MIN_PCT + (sensitivity / 100) * (SENSITIVITY_MAX_PCT - SENSITIVITY_MIN_PCT))}% shrink
+            </span>
+          </label>
+          <input
+            id="sensitivity"
+            type="range"
+            min={0}
+            max={100}
+            value={sensitivity}
+            onChange={(e) => setSensitivity(Number(e.target.value))}
+            className="w-full h-2 rounded-lg appearance-none bg-zinc-700 accent-emerald-500"
+            aria-label="Sensitivity: 5% very strict to 25% very loose"
+          />
+          <div className="flex justify-between text-xs text-zinc-500">
+            <span>Very Strict (5%)</span>
+            <span>Very Loose (25%)</span>
           </div>
-        )}
+        </div>
 
         {!isRecording && (
           <button

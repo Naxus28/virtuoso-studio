@@ -21,12 +21,20 @@ export default function Home() {
             Real-time posture feedback so you can focus on the music—not your
             posture. Built for musicians who practice long hours.
           </p>
-          <Link
-            href="/studio"
-            className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-8 py-4 text-base font-semibold text-white shadow-lg shadow-emerald-900/30 hover:bg-emerald-500 transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-400 focus:ring-offset-2 focus:ring-offset-zinc-950"
-          >
-            Launch Studio
-          </Link>
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
+            <Link
+              href="/studio"
+              className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-8 py-4 text-base font-semibold text-white shadow-lg shadow-emerald-900/30 hover:bg-emerald-500 transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-400 focus:ring-offset-2 focus:ring-offset-zinc-950"
+            >
+              Launch Studio
+            </Link>
+            <Link
+              href="/library"
+              className="text-zinc-400 hover:text-zinc-100 text-sm transition-colors"
+            >
+              Session Library →
+            </Link>
+          </div>
         </div>
       </section>
 
