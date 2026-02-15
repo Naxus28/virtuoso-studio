@@ -322,7 +322,9 @@ if (typeof globalThis.$RefreshHelpers$ === 'object' && globalThis.$RefreshHelper
 var { r: __turbopack_require__, f: __turbopack_module_context__, i: __turbopack_import__, s: __turbopack_esm__, v: __turbopack_export_value__, n: __turbopack_export_namespace__, c: __turbopack_cache__, M: __turbopack_modules__, l: __turbopack_load__, j: __turbopack_dynamic__, P: __turbopack_resolve_absolute_path__, U: __turbopack_relative_url__, R: __turbopack_resolve_module_id_path__, b: __turbopack_worker_blob_url__, g: global, __dirname, k: __turbopack_refresh__, m: module, z: __turbopack_require_stub__ } = __turbopack_context__;
 {
 __turbopack_esm__({
-    "PostureEngine": (()=>PostureEngine)
+    "PostureEngine": (()=>PostureEngine),
+    "SENSITIVITY_MAX_PCT": (()=>SENSITIVITY_MAX_PCT),
+    "SENSITIVITY_MIN_PCT": (()=>SENSITIVITY_MIN_PCT)
 });
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__ = __turbopack_import__("[project]/node_modules/next/dist/compiled/react/jsx-dev-runtime.js [app-client] (ecmascript)");
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__ = __turbopack_import__("[project]/node_modules/next/dist/compiled/react/index.js [app-client] (ecmascript)");
@@ -333,6 +335,7 @@ var __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$components$2f$Posture
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$framer$2d$motion$2f$dist$2f$es$2f$components$2f$AnimatePresence$2f$index$2e$mjs__$5b$app$2d$client$5d$__$28$ecmascript$29$__ = __turbopack_import__("[project]/node_modules/framer-motion/dist/es/components/AnimatePresence/index.mjs [app-client] (ecmascript)");
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$framer$2d$motion$2f$dist$2f$es$2f$render$2f$components$2f$motion$2f$proxy$2e$mjs__$5b$app$2d$client$5d$__$28$ecmascript$29$__ = __turbopack_import__("[project]/node_modules/framer-motion/dist/es/render/components/motion/proxy.mjs [app-client] (ecmascript)");
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$triangle$2d$alert$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__$3c$export__default__as__AlertTriangle$3e$__ = __turbopack_import__("[project]/node_modules/lucide-react/dist/esm/icons/triangle-alert.js [app-client] (ecmascript) <export default as AlertTriangle>");
+var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$camera$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__$3c$export__default__as__Camera$3e$__ = __turbopack_import__("[project]/node_modules/lucide-react/dist/esm/icons/camera.js [app-client] (ecmascript) <export default as Camera>");
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$activity$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__$3c$export__default__as__Activity$3e$__ = __turbopack_import__("[project]/node_modules/lucide-react/dist/esm/icons/activity.js [app-client] (ecmascript) <export default as Activity>");
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$play$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__$3c$export__default__as__Play$3e$__ = __turbopack_import__("[project]/node_modules/lucide-react/dist/esm/icons/play.js [app-client] (ecmascript) <export default as Play>");
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$square$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__$3c$export__default__as__Square$3e$__ = __turbopack_import__("[project]/node_modules/lucide-react/dist/esm/icons/square.js [app-client] (ecmascript) <export default as Square>");
@@ -354,8 +357,16 @@ const EAR_LEFT = 7;
 const EAR_RIGHT = 8;
 const SHOULDER_LEFT = 11;
 const SHOULDER_RIGHT = 12;
+const HIP_LEFT = 23;
+const HIP_RIGHT = 24;
 const SMOOTHING_ALPHA = 0.3;
-const SLOUCH_THRESHOLD = 0.85; // 15% collapse => current <= baseline * 0.85
+/** Only alert after bad posture persists this long (ms) — 0.5s for rapid response */ const PERSISTENCE_MS = 500;
+/** ~30fps → frames needed for persistence */ const PERSISTENCE_FRAMES = Math.max(1, Math.round(PERSISTENCE_MS / 1000 * 30));
+/** Lean: angle (ear-shoulder-hip) below baseline * this = head forward */ const LEAN_ANGLE_RATIO = 0.88;
+/** Tension: shoulders elevated vs baseline (world Y, meters) */ const TENSION_SHOULDER_UP_WORLD_M = 0.02;
+/** Quality below this = show alert in playback/chart (0–1) */ const QUALITY_ALERT_THRESHOLD = 0.88;
+/** Side view: alert when ear-shoulder distance drops below this ratio of baseline */ const SIDE_VIEW_DISTANCE_RATIO = 0.85;
+/** Front view: max shoulder height difference (world Y, meters) for symmetry */ const FRONT_SHOULDER_SYMMETRY_TOLERANCE_M = 0.03;
 const TENSION_HUM_HZ = 200;
 const TENSION_HUM_GAIN_MIN = 0.05;
 const TENSION_HUM_GAIN_MAX = 0.3;
@@ -370,8 +381,104 @@ function lowPass(prev, next, alpha) {
         visibility: next.visibility
     };
 }
-function verticalDistanceEarShoulder(ear, shoulder) {
-    return Math.abs(ear.y - shoulder.y);
+function lowPassWorld(prev, next, alpha) {
+    if (!prev) return {
+        ...next
+    };
+    return {
+        x: alpha * next.x + (1 - alpha) * prev.x,
+        y: alpha * next.y + (1 - alpha) * prev.y,
+        z: alpha * next.z + (1 - alpha) * prev.z
+    };
+}
+/** 3D distance in meters (world coordinates). */ function dist3(a, b) {
+    return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+/** Angle in degrees at shoulder between vectors shoulder→ear and shoulder→hip (3D). Smaller = head forward (lean). */ function angleEarShoulderHipWorld(ear, shoulder, hip) {
+    const vx = ear.x - shoulder.x;
+    const vy = ear.y - shoulder.y;
+    const vz = ear.z - shoulder.z;
+    const wx = hip.x - shoulder.x;
+    const wy = hip.y - shoulder.y;
+    const wz = hip.z - shoulder.z;
+    const dot = vx * wx + vy * wy + vz * wz;
+    const magV = Math.hypot(vx, vy, vz) || 1e-6;
+    const magW = Math.hypot(wx, wy, wz) || 1e-6;
+    const cos = Math.max(-1, Math.min(1, dot / (magV * magW)));
+    return Math.acos(cos) * 180 / Math.PI;
+}
+const SENSITIVITY_MIN_PCT = 5;
+const SENSITIVITY_MAX_PCT = 25;
+const SHRUG_TOLERANCE_WORLD = 0.02; // meters
+/** Sensitivity 0–100 → ratio threshold (trigger when ear-shoulder shrinks below this). 0 = 0.95 (5%), 100 = 0.75 (25%). */ function sensitivityToRatioThreshold(sensitivityPercent) {
+    const pct = Math.max(0, Math.min(100, sensitivityPercent));
+    return 0.95 - pct / 100 * 0.2; // 5% shrink → 0.95, 25% shrink → 0.75
+}
+/** Front view: angle + shoulder symmetry + vertical compression (world coords). */ function evaluatePostureFront(w, baseline, sensitivityPercent) {
+    if (w.length < 25) return {
+        leanRaw: false,
+        tensionRaw: false,
+        isShrug: false,
+        quality: 1
+    };
+    const angleL = angleEarShoulderHipWorld(w[EAR_LEFT], w[SHOULDER_LEFT], w[HIP_LEFT]);
+    const angleR = angleEarShoulderHipWorld(w[EAR_RIGHT], w[SHOULDER_RIGHT], w[HIP_RIGHT]);
+    const avgAngle = (angleL + angleR) / 2;
+    const baselineAngle = (baseline.angleLeft + baseline.angleRight) / 2;
+    const leanRaw = avgAngle < baselineAngle * LEAN_ANGLE_RATIO;
+    const earYLeft = w[EAR_LEFT].y;
+    const earYRight = w[EAR_RIGHT].y;
+    const shoulderYLeft = w[SHOULDER_LEFT].y;
+    const shoulderYRight = w[SHOULDER_RIGHT].y;
+    const shoulderUpLeft = baseline.shoulderYLeft - shoulderYLeft > SHRUG_TOLERANCE_WORLD;
+    const shoulderUpRight = baseline.shoulderYRight - shoulderYRight > SHRUG_TOLERANCE_WORLD;
+    const earStableLeft = earYLeft <= baseline.earYLeft + SHRUG_TOLERANCE_WORLD;
+    const earStableRight = earYRight <= baseline.earYRight + SHRUG_TOLERANCE_WORLD;
+    const isShrug = shoulderUpLeft && earStableLeft || shoulderUpRight && earStableRight;
+    const avgShoulderY = (shoulderYLeft + shoulderYRight) / 2;
+    const baselineShoulderY = (baseline.shoulderYLeft + baseline.shoulderYRight) / 2;
+    const avgEarY = (earYLeft + earYRight) / 2;
+    const baselineEarY = (baseline.earYLeft + baseline.earYRight) / 2;
+    const shouldersHigh = baselineShoulderY - avgShoulderY > TENSION_SHOULDER_UP_WORLD_M;
+    const earNotDropped = avgEarY <= baselineEarY + SHRUG_TOLERANCE_WORLD;
+    const shoulderSymmetry = Math.abs(shoulderYLeft - shoulderYRight) <= FRONT_SHOULDER_SYMMETRY_TOLERANCE_M;
+    const tensionFromElevation = shouldersHigh && earNotDropped && !leanRaw && shoulderSymmetry;
+    const vertLeft = Math.abs(w[EAR_LEFT].y - w[SHOULDER_LEFT].y);
+    const vertRight = Math.abs(w[EAR_RIGHT].y - w[SHOULDER_RIGHT].y);
+    const avgVert = (vertLeft + vertRight) / 2;
+    const baselineVert = (baseline.earShoulderVertLeft + baseline.earShoulderVertRight) / 2;
+    const vertRatio = baselineVert > 1e-6 ? avgVert / baselineVert : 1;
+    const ratioThreshold = sensitivityToRatioThreshold(sensitivityPercent);
+    const tensionFromVertical = vertRatio < ratioThreshold && !isShrug;
+    const tensionRaw = tensionFromElevation || tensionFromVertical;
+    const quality = Math.min(1, avgAngle / baselineAngle);
+    return {
+        leanRaw,
+        tensionRaw,
+        isShrug,
+        quality
+    };
+}
+/** Side view: ear–shoulder distance (7 to 11, 8 to 12) in world; alert when collapse. */ function evaluatePostureSide(w, baseline) {
+    if (w.length < 25) return {
+        leanRaw: false,
+        tensionRaw: false,
+        isShrug: false,
+        quality: 1
+    };
+    const distLeft = dist3(w[EAR_LEFT], w[SHOULDER_LEFT]);
+    const distRight = dist3(w[EAR_RIGHT], w[SHOULDER_RIGHT]);
+    const avgDist = (distLeft + distRight) / 2;
+    const baselineDist = (baseline.distLeft + baseline.distRight) / 2;
+    const ratio = baselineDist > 1e-6 ? avgDist / baselineDist : 1;
+    const leanRaw = ratio < SIDE_VIEW_DISTANCE_RATIO;
+    const quality = Math.min(1, ratio);
+    return {
+        leanRaw,
+        tensionRaw: false,
+        isShrug: false,
+        quality
+    };
 }
 function PostureEngine() {
     _s();
@@ -382,6 +489,7 @@ function PostureEngine() {
     const playbackRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(0);
     const videoTimestampRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(0);
     const smoothedLandmarksRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])([]);
+    const smoothedWorldLandmarksRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])([]);
     const sessionRecorderRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(new __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$SessionRecorder$2e$ts__$5b$app$2d$client$5d$__$28$ecmascript$29$__["SessionRecorder"]());
     const isRecordingRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(false);
     const qualityRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(1);
@@ -392,9 +500,12 @@ function PostureEngine() {
     const audioContextRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(null);
     const gainNodeRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(null);
     const playbackStartTimeRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(0);
+    const [viewMode, setViewMode] = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useState"])("front");
+    const [sensitivity, setSensitivity] = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useState"])(35); // 0–100; 35 ≈ 12% shrink (default)
     const [isCalibrated, setIsCalibrated] = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useState"])(false);
     const [baseline, setBaseline] = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useState"])(null);
-    const [isSlouch, setIsSlouch] = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useState"])(false);
+    const [sideViewBaseline, setSideViewBaseline] = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useState"])(null);
+    const [alertType, setAlertType] = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useState"])(null);
     const [landmarks, setLandmarks] = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useState"])([]);
     const [isPoseReady, setIsPoseReady] = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useState"])(false);
     const [error, setError] = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useState"])(null);
@@ -404,15 +515,26 @@ function PostureEngine() {
     const [playbackLandmarks, setPlaybackLandmarks] = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useState"])([]);
     const [playbackSlouch, setPlaybackSlouch] = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useState"])(false);
     const baselineRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(null);
+    const sideViewBaselineRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(null);
     const isCalibratedRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(false);
+    const viewModeRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])("front");
+    const sensitivityRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(35);
+    const leanFramesRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(0);
+    const tensionFramesRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(0);
     (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useEffect"])({
         "PostureEngine.useEffect": ()=>{
             baselineRef.current = baseline;
+            sideViewBaselineRef.current = sideViewBaseline;
             isCalibratedRef.current = isCalibrated;
+            viewModeRef.current = viewMode;
+            sensitivityRef.current = sensitivity;
         }
     }["PostureEngine.useEffect"], [
         baseline,
-        isCalibrated
+        sideViewBaseline,
+        isCalibrated,
+        viewMode,
+        sensitivity
     ]);
     (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useEffect"])({
         "PostureEngine.useEffect": ()=>{
@@ -471,7 +593,8 @@ function PostureEngine() {
             const gain = gainNodeRef.current;
             const ctx = audioContextRef.current;
             if (!gain || !ctx) return;
-            if (isSlouch) {
+            const isAlert = alertType != null;
+            if (isAlert) {
                 const q = qualityRef.current;
                 const severity = 1 - Math.max(0, q);
                 gain.gain.setTargetAtTime(TENSION_HUM_GAIN_MIN + severity * (TENSION_HUM_GAIN_MAX - TENSION_HUM_GAIN_MIN), ctx.currentTime, 0.05);
@@ -481,7 +604,7 @@ function PostureEngine() {
             }
         }
     }["PostureEngine.useEffect"], [
-        isSlouch
+        alertType
     ]);
     // Initialize MediaPipe Pose
     (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useEffect"])({
@@ -525,16 +648,52 @@ function PostureEngine() {
     }["PostureEngine.useEffect"], []);
     const handleCalibrate = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useCallback"])({
         "PostureEngine.useCallback[handleCalibrate]": ()=>{
-            const current = smoothedLandmarksRef.current;
-            if (current.length < 13) return;
-            const leftD = verticalDistanceEarShoulder(current[EAR_LEFT], current[SHOULDER_LEFT]);
-            const rightD = verticalDistanceEarShoulder(current[EAR_RIGHT], current[SHOULDER_RIGHT]);
-            const avg = (leftD + rightD) / 2;
-            setBaseline(avg);
+            const world = smoothedWorldLandmarksRef.current;
+            if (world.length < 25) return;
+            const mode = viewModeRef.current;
+            if (mode === "front") {
+                const angleLeft = angleEarShoulderHipWorld(world[EAR_LEFT], world[SHOULDER_LEFT], world[HIP_LEFT]);
+                const angleRight = angleEarShoulderHipWorld(world[EAR_RIGHT], world[SHOULDER_RIGHT], world[HIP_RIGHT]);
+                const bl = {
+                    angleLeft,
+                    angleRight,
+                    earYLeft: world[EAR_LEFT].y,
+                    earYRight: world[EAR_RIGHT].y,
+                    shoulderYLeft: world[SHOULDER_LEFT].y,
+                    shoulderYRight: world[SHOULDER_RIGHT].y,
+                    earShoulderVertLeft: Math.abs(world[EAR_LEFT].y - world[SHOULDER_LEFT].y),
+                    earShoulderVertRight: Math.abs(world[EAR_RIGHT].y - world[SHOULDER_RIGHT].y)
+                };
+                setBaseline(bl);
+                setSideViewBaseline(null);
+            } else {
+                const distLeft = dist3(world[EAR_LEFT], world[SHOULDER_LEFT]);
+                const distRight = dist3(world[EAR_RIGHT], world[SHOULDER_RIGHT]);
+                setSideViewBaseline({
+                    distLeft,
+                    distRight
+                });
+                setBaseline(null);
+            }
             setIsCalibrated(true);
-            setIsSlouch(false);
+            setAlertType(null);
+            leanFramesRef.current = 0;
+            tensionFramesRef.current = 0;
         }
     }["PostureEngine.useCallback[handleCalibrate]"], []);
+    const handleToggleViewMode = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useCallback"])({
+        "PostureEngine.useCallback[handleToggleViewMode]": ()=>{
+            setViewMode({
+                "PostureEngine.useCallback[handleToggleViewMode]": (prev)=>prev === "front" ? "side" : "front"
+            }["PostureEngine.useCallback[handleToggleViewMode]"]);
+            setBaseline(null);
+            setSideViewBaseline(null);
+            setIsCalibrated(false);
+            setAlertType(null);
+            leanFramesRef.current = 0;
+            tensionFramesRef.current = 0;
+        }
+    }["PostureEngine.useCallback[handleToggleViewMode]"], []);
     const handleStartSession = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useCallback"])({
         "PostureEngine.useCallback[handleStartSession]": ()=>{
             const w = videoSizeRef.current.width;
@@ -600,8 +759,12 @@ function PostureEngine() {
                         videoTimestampRef.current += 1;
                         const result = p.detectForVideo(webcam, videoTimestampRef.current);
                         const raw = result?.landmarks?.[0] ?? [];
+                        const rawWorld = result?.worldLandmarks?.[0] ?? [];
                         if (raw.length === 0) {
                             setLandmarks([]);
+                            leanFramesRef.current = 0;
+                            tensionFramesRef.current = 0;
+                            setAlertType(null);
                         } else {
                             const smoothed = raw.map({
                                 "PostureEngine.useEffect.tick.smoothed": (lm, i)=>lowPass(smoothedLandmarksRef.current[i], {
@@ -613,17 +776,61 @@ function PostureEngine() {
                             }["PostureEngine.useEffect.tick.smoothed"]);
                             smoothedLandmarksRef.current = smoothed;
                             setLandmarks(smoothed);
+                            const worldSmoothed = rawWorld.map({
+                                "PostureEngine.useEffect.tick.worldSmoothed": (lm, i)=>lowPassWorld(smoothedWorldLandmarksRef.current[i], {
+                                        x: lm.x,
+                                        y: lm.y,
+                                        z: lm.z
+                                    }, SMOOTHING_ALPHA)
+                            }["PostureEngine.useEffect.tick.worldSmoothed"]);
+                            smoothedWorldLandmarksRef.current = worldSmoothed;
+                            const mode = viewModeRef.current;
                             const base = baselineRef.current;
+                            const sideBase = sideViewBaselineRef.current;
                             let quality = 1;
-                            if (isCalibratedRef.current && base != null && base > 0) {
-                                const leftD = verticalDistanceEarShoulder(smoothed[EAR_LEFT], smoothed[SHOULDER_LEFT]);
-                                const rightD = verticalDistanceEarShoulder(smoothed[EAR_RIGHT], smoothed[SHOULDER_RIGHT]);
-                                const avg = (leftD + rightD) / 2;
-                                quality = Math.min(1, avg / base);
+                            if (isCalibratedRef.current && mode === "front" && base != null) {
+                                const { leanRaw, tensionRaw, isShrug, quality: q } = evaluatePostureFront(worldSmoothed, base, sensitivityRef.current);
+                                quality = q;
                                 qualityRef.current = quality;
-                                setIsSlouch(avg <= base * SLOUCH_THRESHOLD);
+                                const leanCounts = leanRaw && !isShrug;
+                                const tensionCounts = tensionRaw;
+                                if (leanCounts) {
+                                    leanFramesRef.current += 1;
+                                    tensionFramesRef.current = 0;
+                                } else if (tensionCounts) {
+                                    tensionFramesRef.current += 1;
+                                    leanFramesRef.current = 0;
+                                } else {
+                                    leanFramesRef.current = 0;
+                                    tensionFramesRef.current = 0;
+                                }
+                                const leanPersisted = leanFramesRef.current >= PERSISTENCE_FRAMES;
+                                const tensionPersisted = tensionFramesRef.current >= PERSISTENCE_FRAMES;
+                                setAlertType({
+                                    "PostureEngine.useEffect.tick": (prev)=>{
+                                        if (leanPersisted) return "lean";
+                                        if (tensionPersisted) return "tension";
+                                        return null;
+                                    }
+                                }["PostureEngine.useEffect.tick"]);
+                            } else if (isCalibratedRef.current && mode === "side" && sideBase != null) {
+                                const { leanRaw, quality: q } = evaluatePostureSide(worldSmoothed, sideBase);
+                                quality = q;
+                                qualityRef.current = quality;
+                                if (leanRaw) {
+                                    leanFramesRef.current += 1;
+                                    tensionFramesRef.current = 0;
+                                } else {
+                                    leanFramesRef.current = 0;
+                                    tensionFramesRef.current = 0;
+                                }
+                                const leanPersisted = leanFramesRef.current >= PERSISTENCE_FRAMES;
+                                setAlertType(leanPersisted ? "lean" : null);
                             } else {
                                 qualityRef.current = 1;
+                                leanFramesRef.current = 0;
+                                tensionFramesRef.current = 0;
+                                setAlertType(null);
                             }
                             if (isRecordingRef.current) {
                                 sessionRecorderRef.current.addFrame(Date.now(), smoothed, quality);
@@ -657,7 +864,7 @@ function PostureEngine() {
                 const frame = frames[frameIndex];
                 if (frame) {
                     setPlaybackLandmarks(frame.landmarks);
-                    setPlaybackSlouch(frame.quality < SLOUCH_THRESHOLD);
+                    setPlaybackSlouch(frame.quality < QUALITY_ALERT_THRESHOLD);
                 }
                 playbackRef.current = requestAnimationFrame(tick);
             }
@@ -699,11 +906,11 @@ function PostureEngine() {
                 canvas.height = h;
             }
             ctx.clearRect(0, 0, w, h);
-            (0, __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$components$2f$PostureEngine$2e$draw$2e$ts__$5b$app$2d$client$5d$__$28$ecmascript$29$__["drawSkeleton"])(ctx, landmarks, isSlouch, w, h);
+            (0, __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$components$2f$PostureEngine$2e$draw$2e$ts__$5b$app$2d$client$5d$__$28$ecmascript$29$__["drawSkeleton"])(ctx, landmarks, alertType != null, w, h);
         }
     }["PostureEngine.useEffect"], [
         landmarks,
-        isSlouch,
+        alertType,
         isPlayback,
         sessionRecording,
         playbackLandmarks,
@@ -729,7 +936,7 @@ function PostureEngine() {
                 children: error
             }, void 0, false, {
                 fileName: "[project]/src/components/PostureEngine.tsx",
-                lineNumber: 375,
+                lineNumber: 623,
                 columnNumber: 9
             }, this),
             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -745,7 +952,7 @@ function PostureEngine() {
                                 mirrored: true
                             }, void 0, false, {
                                 fileName: "[project]/src/components/PostureEngine.tsx",
-                                lineNumber: 383,
+                                lineNumber: 631,
                                 columnNumber: 13
                             }, this),
                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("canvas", {
@@ -756,7 +963,7 @@ function PostureEngine() {
                                 }
                             }, void 0, false, {
                                 fileName: "[project]/src/components/PostureEngine.tsx",
-                                lineNumber: 390,
+                                lineNumber: 638,
                                 columnNumber: 13
                             }, this)
                         ]
@@ -773,12 +980,12 @@ function PostureEngine() {
                             }
                         }, void 0, false, {
                             fileName: "[project]/src/components/PostureEngine.tsx",
-                            lineNumber: 401,
+                            lineNumber: 649,
                             columnNumber: 13
                         }, this)
                     }, void 0, false, {
                         fileName: "[project]/src/components/PostureEngine.tsx",
-                        lineNumber: 397,
+                        lineNumber: 645,
                         columnNumber: 11
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -786,7 +993,7 @@ function PostureEngine() {
                         children: "Educational Tool Only — Not a medical device."
                     }, void 0, false, {
                         fileName: "[project]/src/components/PostureEngine.tsx",
-                        lineNumber: 409,
+                        lineNumber: 657,
                         columnNumber: 9
                     }, this),
                     isPlayback && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -794,11 +1001,11 @@ function PostureEngine() {
                         children: "Reviewing session — replay"
                     }, void 0, false, {
                         fileName: "[project]/src/components/PostureEngine.tsx",
-                        lineNumber: 413,
+                        lineNumber: 661,
                         columnNumber: 11
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$framer$2d$motion$2f$dist$2f$es$2f$components$2f$AnimatePresence$2f$index$2e$mjs__$5b$app$2d$client$5d$__$28$ecmascript$29$__["AnimatePresence"], {
-                        children: (showLiveView ? isSlouch : playbackSlouch) && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$framer$2d$motion$2f$dist$2f$es$2f$render$2f$components$2f$motion$2f$proxy$2e$mjs__$5b$app$2d$client$5d$__$28$ecmascript$29$__["motion"].div, {
+                        children: (showLiveView ? alertType : playbackSlouch) && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$framer$2d$motion$2f$dist$2f$es$2f$render$2f$components$2f$motion$2f$proxy$2e$mjs__$5b$app$2d$client$5d$__$28$ecmascript$29$__["motion"].div, {
                             initial: {
                                 opacity: 0,
                                 y: 4
@@ -818,176 +1025,277 @@ function PostureEngine() {
                                     size: 18
                                 }, void 0, false, {
                                     fileName: "[project]/src/components/PostureEngine.tsx",
-                                    lineNumber: 425,
+                                    lineNumber: 673,
                                     columnNumber: 15
                                 }, this),
-                                "Tension Alert"
+                                showLiveView && alertType === "tension" ? "Tension Detected" : showLiveView && alertType === "lean" ? "Lean Detected" : "Tension Alert"
                             ]
                         }, void 0, true, {
                             fileName: "[project]/src/components/PostureEngine.tsx",
-                            lineNumber: 419,
+                            lineNumber: 667,
                             columnNumber: 13
                         }, this)
                     }, void 0, false, {
                         fileName: "[project]/src/components/PostureEngine.tsx",
-                        lineNumber: 417,
+                        lineNumber: 665,
                         columnNumber: 9
                     }, this)
                 ]
             }, void 0, true, {
                 fileName: "[project]/src/components/PostureEngine.tsx",
-                lineNumber: 380,
+                lineNumber: 628,
                 columnNumber: 7
             }, this),
             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
-                className: "flex flex-wrap items-center justify-center gap-3",
-                children: [
-                    /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
-                        type: "button",
-                        onClick: handleCalibrate,
-                        disabled: !isPoseReady || landmarks.length === 0 || isRecording,
-                        className: "inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50 disabled:pointer-events-none",
-                        children: [
-                            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$activity$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__$3c$export__default__as__Activity$3e$__["Activity"], {
-                                size: 18
-                            }, void 0, false, {
-                                fileName: "[project]/src/components/PostureEngine.tsx",
-                                lineNumber: 439,
-                                columnNumber: 11
-                            }, this),
-                            "Calibrate"
-                        ]
-                    }, void 0, true, {
-                        fileName: "[project]/src/components/PostureEngine.tsx",
-                        lineNumber: 433,
-                        columnNumber: 9
-                    }, this),
-                    !isRecording && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
-                        type: "button",
-                        onClick: handleStartSession,
-                        disabled: !isPoseReady || !isCalibrated,
-                        className: "inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50 disabled:pointer-events-none",
-                        children: [
-                            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$play$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__$3c$export__default__as__Play$3e$__["Play"], {
-                                size: 18
-                            }, void 0, false, {
-                                fileName: "[project]/src/components/PostureEngine.tsx",
-                                lineNumber: 450,
-                                columnNumber: 13
-                            }, this),
-                            "Start Session"
-                        ]
-                    }, void 0, true, {
-                        fileName: "[project]/src/components/PostureEngine.tsx",
-                        lineNumber: 444,
-                        columnNumber: 11
-                    }, this),
-                    isRecording && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["Fragment"], {
-                        children: [
-                            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
-                                type: "button",
-                                onClick: handleStopSession,
-                                className: "inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-500",
-                                children: [
-                                    /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$square$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__$3c$export__default__as__Square$3e$__["Square"], {
-                                        size: 18
-                                    }, void 0, false, {
-                                        fileName: "[project]/src/components/PostureEngine.tsx",
-                                        lineNumber: 461,
-                                        columnNumber: 15
-                                    }, this),
-                                    "Stop Session"
-                                ]
-                            }, void 0, true, {
-                                fileName: "[project]/src/components/PostureEngine.tsx",
-                                lineNumber: 456,
-                                columnNumber: 13
-                            }, this),
-                            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
-                                type: "button",
-                                onClick: handleDiscardAndRestart,
-                                className: "inline-flex items-center gap-2 rounded-lg bg-zinc-600 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-500",
-                                children: [
-                                    /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$trash$2d$2$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__$3c$export__default__as__Trash2$3e$__["Trash2"], {
-                                        size: 18
-                                    }, void 0, false, {
-                                        fileName: "[project]/src/components/PostureEngine.tsx",
-                                        lineNumber: 469,
-                                        columnNumber: 15
-                                    }, this),
-                                    "Discard & Restart"
-                                ]
-                            }, void 0, true, {
-                                fileName: "[project]/src/components/PostureEngine.tsx",
-                                lineNumber: 464,
-                                columnNumber: 13
-                            }, this)
-                        ]
-                    }, void 0, true),
-                    hasRecording && !isPlayback && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
-                        type: "button",
-                        onClick: handleReviewSession,
-                        className: "inline-flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-500",
-                        children: [
-                            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$rotate$2d$ccw$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__$3c$export__default__as__RotateCcw$3e$__["RotateCcw"], {
-                                size: 18
-                            }, void 0, false, {
-                                fileName: "[project]/src/components/PostureEngine.tsx",
-                                lineNumber: 480,
-                                columnNumber: 13
-                            }, this),
-                            "Review Session"
-                        ]
-                    }, void 0, true, {
-                        fileName: "[project]/src/components/PostureEngine.tsx",
-                        lineNumber: 475,
-                        columnNumber: 11
-                    }, this),
-                    isPlayback && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["Fragment"], {
-                        children: [
-                            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
-                                type: "button",
-                                onClick: handleBackToLive,
-                                className: "inline-flex items-center gap-2 rounded-lg bg-zinc-600 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-500",
-                                children: "Back to Live"
-                            }, void 0, false, {
-                                fileName: "[project]/src/components/PostureEngine.tsx",
-                                lineNumber: 486,
-                                columnNumber: 13
-                            }, this),
-                            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
-                                type: "button",
-                                onClick: handleStartNewSession,
-                                className: "inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500",
-                                children: [
-                                    /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$play$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__$3c$export__default__as__Play$3e$__["Play"], {
-                                        size: 18
-                                    }, void 0, false, {
-                                        fileName: "[project]/src/components/PostureEngine.tsx",
-                                        lineNumber: 498,
-                                        columnNumber: 15
-                                    }, this),
-                                    "Start New Session"
-                                ]
-                            }, void 0, true, {
-                                fileName: "[project]/src/components/PostureEngine.tsx",
-                                lineNumber: 493,
-                                columnNumber: 13
-                            }, this)
-                        ]
-                    }, void 0, true),
-                    isCalibrated && showLiveView && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
-                        className: "text-zinc-400 text-sm",
-                        children: isSlouch ? "Slouch detected" : "Good posture"
-                    }, void 0, false, {
-                        fileName: "[project]/src/components/PostureEngine.tsx",
-                        lineNumber: 505,
-                        columnNumber: 11
-                    }, this)
-                ]
-            }, void 0, true, {
+                className: "w-full max-w-[640px] space-y-4",
+                children: /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+                    className: "flex flex-wrap items-center justify-center gap-3",
+                    children: [
+                        /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
+                            type: "button",
+                            onClick: handleToggleViewMode,
+                            disabled: isRecording,
+                            className: "inline-flex items-center gap-2 rounded-lg bg-zinc-600 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-500 disabled:opacity-50 disabled:pointer-events-none",
+                            title: viewMode === "front" ? "Switch to Side View (ear–shoulder distance)" : "Switch to Front View (angle + symmetry)",
+                            children: [
+                                /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$camera$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__$3c$export__default__as__Camera$3e$__["Camera"], {
+                                    size: 18
+                                }, void 0, false, {
+                                    fileName: "[project]/src/components/PostureEngine.tsx",
+                                    lineNumber: 693,
+                                    columnNumber: 13
+                                }, this),
+                                viewMode === "front" ? "Front View" : "Side View"
+                            ]
+                        }, void 0, true, {
+                            fileName: "[project]/src/components/PostureEngine.tsx",
+                            lineNumber: 686,
+                            columnNumber: 11
+                        }, this),
+                        /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
+                            type: "button",
+                            onClick: handleCalibrate,
+                            disabled: !isPoseReady || landmarks.length === 0 || isRecording,
+                            className: "inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50 disabled:pointer-events-none",
+                            children: [
+                                /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$activity$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__$3c$export__default__as__Activity$3e$__["Activity"], {
+                                    size: 18
+                                }, void 0, false, {
+                                    fileName: "[project]/src/components/PostureEngine.tsx",
+                                    lineNumber: 702,
+                                    columnNumber: 13
+                                }, this),
+                                "Calibrate"
+                            ]
+                        }, void 0, true, {
+                            fileName: "[project]/src/components/PostureEngine.tsx",
+                            lineNumber: 696,
+                            columnNumber: 11
+                        }, this),
+                        viewMode === "front" && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+                            className: "w-full flex flex-col gap-1",
+                            children: [
+                                /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("label", {
+                                    htmlFor: "sensitivity",
+                                    className: "text-sm text-zinc-400 flex justify-between",
+                                    children: [
+                                        /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+                                            children: "Sensitivity"
+                                        }, void 0, false, {
+                                            fileName: "[project]/src/components/PostureEngine.tsx",
+                                            lineNumber: 709,
+                                            columnNumber: 15
+                                        }, this),
+                                        /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+                                            children: [
+                                                Math.round(SENSITIVITY_MIN_PCT + sensitivity / 100 * (SENSITIVITY_MAX_PCT - SENSITIVITY_MIN_PCT)),
+                                                "% shrink"
+                                            ]
+                                        }, void 0, true, {
+                                            fileName: "[project]/src/components/PostureEngine.tsx",
+                                            lineNumber: 710,
+                                            columnNumber: 15
+                                        }, this)
+                                    ]
+                                }, void 0, true, {
+                                    fileName: "[project]/src/components/PostureEngine.tsx",
+                                    lineNumber: 708,
+                                    columnNumber: 13
+                                }, this),
+                                /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("input", {
+                                    id: "sensitivity",
+                                    type: "range",
+                                    min: 0,
+                                    max: 100,
+                                    value: sensitivity,
+                                    onChange: (e)=>setSensitivity(Number(e.target.value)),
+                                    className: "w-full h-2 rounded-lg appearance-none bg-zinc-700 accent-emerald-500",
+                                    "aria-label": "Sensitivity: 5% very strict to 25% very loose"
+                                }, void 0, false, {
+                                    fileName: "[project]/src/components/PostureEngine.tsx",
+                                    lineNumber: 714,
+                                    columnNumber: 13
+                                }, this),
+                                /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+                                    className: "flex justify-between text-xs text-zinc-500",
+                                    children: [
+                                        /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+                                            children: "Very Strict (5%)"
+                                        }, void 0, false, {
+                                            fileName: "[project]/src/components/PostureEngine.tsx",
+                                            lineNumber: 725,
+                                            columnNumber: 15
+                                        }, this),
+                                        /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+                                            children: "Very Loose (25%)"
+                                        }, void 0, false, {
+                                            fileName: "[project]/src/components/PostureEngine.tsx",
+                                            lineNumber: 726,
+                                            columnNumber: 15
+                                        }, this)
+                                    ]
+                                }, void 0, true, {
+                                    fileName: "[project]/src/components/PostureEngine.tsx",
+                                    lineNumber: 724,
+                                    columnNumber: 13
+                                }, this)
+                            ]
+                        }, void 0, true, {
+                            fileName: "[project]/src/components/PostureEngine.tsx",
+                            lineNumber: 707,
+                            columnNumber: 11
+                        }, this),
+                        !isRecording && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
+                            type: "button",
+                            onClick: handleStartSession,
+                            disabled: !isPoseReady || !isCalibrated,
+                            className: "inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50 disabled:pointer-events-none",
+                            children: [
+                                /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$play$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__$3c$export__default__as__Play$3e$__["Play"], {
+                                    size: 18
+                                }, void 0, false, {
+                                    fileName: "[project]/src/components/PostureEngine.tsx",
+                                    lineNumber: 738,
+                                    columnNumber: 13
+                                }, this),
+                                sessionRecording ? "Continue Session" : "Start Session"
+                            ]
+                        }, void 0, true, {
+                            fileName: "[project]/src/components/PostureEngine.tsx",
+                            lineNumber: 732,
+                            columnNumber: 11
+                        }, this),
+                        isRecording && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["Fragment"], {
+                            children: [
+                                /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
+                                    type: "button",
+                                    onClick: handleStopSession,
+                                    className: "inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-500",
+                                    children: [
+                                        /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$square$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__$3c$export__default__as__Square$3e$__["Square"], {
+                                            size: 18
+                                        }, void 0, false, {
+                                            fileName: "[project]/src/components/PostureEngine.tsx",
+                                            lineNumber: 749,
+                                            columnNumber: 15
+                                        }, this),
+                                        "Stop Session"
+                                    ]
+                                }, void 0, true, {
+                                    fileName: "[project]/src/components/PostureEngine.tsx",
+                                    lineNumber: 744,
+                                    columnNumber: 13
+                                }, this),
+                                /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
+                                    type: "button",
+                                    onClick: handleDiscardAndRestart,
+                                    className: "inline-flex items-center gap-2 rounded-lg bg-zinc-600 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-500",
+                                    children: [
+                                        /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$trash$2d$2$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__$3c$export__default__as__Trash2$3e$__["Trash2"], {
+                                            size: 18
+                                        }, void 0, false, {
+                                            fileName: "[project]/src/components/PostureEngine.tsx",
+                                            lineNumber: 757,
+                                            columnNumber: 15
+                                        }, this),
+                                        "Discard & Restart"
+                                    ]
+                                }, void 0, true, {
+                                    fileName: "[project]/src/components/PostureEngine.tsx",
+                                    lineNumber: 752,
+                                    columnNumber: 13
+                                }, this)
+                            ]
+                        }, void 0, true),
+                        hasRecording && !isPlayback && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
+                            type: "button",
+                            onClick: handleReviewSession,
+                            className: "inline-flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-500",
+                            children: [
+                                /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$rotate$2d$ccw$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__$3c$export__default__as__RotateCcw$3e$__["RotateCcw"], {
+                                    size: 18
+                                }, void 0, false, {
+                                    fileName: "[project]/src/components/PostureEngine.tsx",
+                                    lineNumber: 768,
+                                    columnNumber: 13
+                                }, this),
+                                "Review Session"
+                            ]
+                        }, void 0, true, {
+                            fileName: "[project]/src/components/PostureEngine.tsx",
+                            lineNumber: 763,
+                            columnNumber: 11
+                        }, this),
+                        isPlayback && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["Fragment"], {
+                            children: [
+                                /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
+                                    type: "button",
+                                    onClick: handleBackToLive,
+                                    className: "inline-flex items-center gap-2 rounded-lg bg-zinc-600 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-500",
+                                    children: "Back to Live"
+                                }, void 0, false, {
+                                    fileName: "[project]/src/components/PostureEngine.tsx",
+                                    lineNumber: 774,
+                                    columnNumber: 13
+                                }, this),
+                                /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
+                                    type: "button",
+                                    onClick: handleStartNewSession,
+                                    className: "inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500",
+                                    children: [
+                                        /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$play$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__$3c$export__default__as__Play$3e$__["Play"], {
+                                            size: 18
+                                        }, void 0, false, {
+                                            fileName: "[project]/src/components/PostureEngine.tsx",
+                                            lineNumber: 786,
+                                            columnNumber: 15
+                                        }, this),
+                                        "Start New Session"
+                                    ]
+                                }, void 0, true, {
+                                    fileName: "[project]/src/components/PostureEngine.tsx",
+                                    lineNumber: 781,
+                                    columnNumber: 13
+                                }, this)
+                            ]
+                        }, void 0, true),
+                        isCalibrated && showLiveView && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+                            className: "text-zinc-400 text-sm",
+                            children: viewMode === "side" ? alertType === "lean" ? "Lean detected" : "Good posture" : alertType === "tension" ? "Tension detected" : alertType === "lean" ? "Lean detected" : "Good posture"
+                        }, void 0, false, {
+                            fileName: "[project]/src/components/PostureEngine.tsx",
+                            lineNumber: 793,
+                            columnNumber: 11
+                        }, this)
+                    ]
+                }, void 0, true, {
+                    fileName: "[project]/src/components/PostureEngine.tsx",
+                    lineNumber: 685,
+                    columnNumber: 9
+                }, this)
+            }, void 0, false, {
                 fileName: "[project]/src/components/PostureEngine.tsx",
-                lineNumber: 432,
+                lineNumber: 684,
                 columnNumber: 7
             }, this),
             sessionRecording && !isPlayback && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -1000,37 +1308,37 @@ function PostureEngine() {
                                 size: 18
                             }, void 0, false, {
                                 fileName: "[project]/src/components/PostureEngine.tsx",
-                                lineNumber: 514,
+                                lineNumber: 811,
                                 columnNumber: 13
                             }, this),
                             "Session Stats"
                         ]
                     }, void 0, true, {
                         fileName: "[project]/src/components/PostureEngine.tsx",
-                        lineNumber: 513,
+                        lineNumber: 810,
                         columnNumber: 11
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$src$2f$components$2f$SessionStats$2e$tsx__$5b$app$2d$client$5d$__$28$ecmascript$29$__["SessionStats"], {
                         recording: sessionRecording
                     }, void 0, false, {
                         fileName: "[project]/src/components/PostureEngine.tsx",
-                        lineNumber: 517,
+                        lineNumber: 814,
                         columnNumber: 11
                     }, this)
                 ]
             }, void 0, true, {
                 fileName: "[project]/src/components/PostureEngine.tsx",
-                lineNumber: 512,
+                lineNumber: 809,
                 columnNumber: 9
             }, this)
         ]
     }, void 0, true, {
         fileName: "[project]/src/components/PostureEngine.tsx",
-        lineNumber: 373,
+        lineNumber: 621,
         columnNumber: 5
     }, this);
 }
-_s(PostureEngine, "dBxiuBovwMHntOrUkIyhJtGq+Cw=");
+_s(PostureEngine, "hQYJk0a3nD15kq30d8/MrUCDcaA=");
 _c = PostureEngine;
 var _c;
 __turbopack_refresh__.register(_c, "PostureEngine");

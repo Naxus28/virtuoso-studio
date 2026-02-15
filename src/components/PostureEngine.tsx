@@ -11,6 +11,7 @@ import {
   BarChart3,
   RotateCcw,
   Trash2,
+  Camera,
 } from "lucide-react";
 import { SessionRecorder } from "@/lib/SessionRecorder";
 import type { SessionRecording } from "@/lib/SessionRecorder";
@@ -22,15 +23,33 @@ const EAR_LEFT = 7;
 const EAR_RIGHT = 8;
 const SHOULDER_LEFT = 11;
 const SHOULDER_RIGHT = 12;
+const HIP_LEFT = 23;
+const HIP_RIGHT = 24;
 
 const SMOOTHING_ALPHA = 0.3;
-const SLOUCH_THRESHOLD = 0.85; // 15% collapse => current <= baseline * 0.85
+/** Only alert after bad posture persists this long (ms) — 0.5s for rapid response */
+const PERSISTENCE_MS = 500;
+/** ~30fps → frames needed for persistence */
+const PERSISTENCE_FRAMES = Math.max(1, Math.round((PERSISTENCE_MS / 1000) * 30));
+/** Lean: angle (ear-shoulder-hip) below baseline * this = head forward */
+const LEAN_ANGLE_RATIO = 0.88;
+/** Tension: shoulders elevated vs baseline (world Y, meters) */
+const TENSION_SHOULDER_UP_WORLD_M = 0.02;
+/** Quality below this = show alert in playback/chart (0–1) */
+const QUALITY_ALERT_THRESHOLD = 0.88;
+/** Side view: alert when ear-shoulder distance drops below this ratio of baseline */
+const SIDE_VIEW_DISTANCE_RATIO = 0.85;
+/** Front view: max shoulder height difference (world Y, meters) for symmetry */
+const FRONT_SHOULDER_SYMMETRY_TOLERANCE_M = 0.03;
 
 const TENSION_HUM_HZ = 200;
 const TENSION_HUM_GAIN_MIN = 0.05;
 const TENSION_HUM_GAIN_MAX = 0.3;
 
 export type Landmark = { x: number; y: number; z?: number; visibility?: number };
+
+/** World landmarks use 3D coordinates in meters (from pose_world_landmarks). */
+export type WorldLandmark = { x: number; y: number; z: number };
 
 function lowPass(
   prev: Landmark | undefined,
@@ -46,11 +65,138 @@ function lowPass(
   };
 }
 
-function verticalDistanceEarShoulder(
-  ear: Landmark,
-  shoulder: Landmark
+function lowPassWorld(
+  prev: WorldLandmark | undefined,
+  next: WorldLandmark,
+  alpha: number
+): WorldLandmark {
+  if (!prev) return { ...next };
+  return {
+    x: alpha * next.x + (1 - alpha) * prev.x,
+    y: alpha * next.y + (1 - alpha) * prev.y,
+    z: alpha * next.z + (1 - alpha) * prev.z,
+  };
+}
+
+/** 3D distance in meters (world coordinates). */
+function dist3(a: WorldLandmark, b: WorldLandmark): number {
+  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+/** Angle in degrees at shoulder between vectors shoulder→ear and shoulder→hip (3D). Smaller = head forward (lean). */
+function angleEarShoulderHipWorld(
+  ear: WorldLandmark,
+  shoulder: WorldLandmark,
+  hip: WorldLandmark
 ): number {
-  return Math.abs(ear.y - shoulder.y);
+  const vx = ear.x - shoulder.x;
+  const vy = ear.y - shoulder.y;
+  const vz = ear.z - shoulder.z;
+  const wx = hip.x - shoulder.x;
+  const wy = hip.y - shoulder.y;
+  const wz = hip.z - shoulder.z;
+  const dot = vx * wx + vy * wy + vz * wz;
+  const magV = Math.hypot(vx, vy, vz) || 1e-6;
+  const magW = Math.hypot(wx, wy, wz) || 1e-6;
+  const cos = Math.max(-1, Math.min(1, dot / (magV * magW)));
+  return (Math.acos(cos) * 180) / Math.PI;
+}
+
+/** Front view: baseline from world landmarks (3D meters). */
+export type PostureBaseline = {
+  angleLeft: number;
+  angleRight: number;
+  earYLeft: number;
+  earYRight: number;
+  shoulderYLeft: number;
+  shoulderYRight: number;
+  /** Vertical ear–shoulder distance (world Y) for tension-from-compression. */
+  earShoulderVertLeft: number;
+  earShoulderVertRight: number;
+};
+
+/** Sensitivity 0–100: 0 = 5% shrink (very strict), 100 = 25% shrink (very loose). */
+export const SENSITIVITY_MIN_PCT = 5;
+export const SENSITIVITY_MAX_PCT = 25;
+
+/** Side view: baseline ear–shoulder 3D distances (meters). */
+export type SideViewBaseline = {
+  distLeft: number;
+  distRight: number;
+};
+
+export type PostureAlertType = null | "lean" | "tension";
+
+export type ViewMode = "front" | "side";
+
+const SHRUG_TOLERANCE_WORLD = 0.02; // meters
+
+/** Sensitivity 0–100 → ratio threshold (trigger when ear-shoulder shrinks below this). 0 = 0.95 (5%), 100 = 0.75 (25%). */
+function sensitivityToRatioThreshold(sensitivityPercent: number): number {
+  const pct = Math.max(0, Math.min(100, sensitivityPercent));
+  return 0.95 - (pct / 100) * 0.2; // 5% shrink → 0.95, 25% shrink → 0.75
+}
+
+/** Front view: angle + shoulder symmetry + vertical compression (world coords). */
+function evaluatePostureFront(
+  w: WorldLandmark[],
+  baseline: PostureBaseline,
+  sensitivityPercent: number
+): { leanRaw: boolean; tensionRaw: boolean; isShrug: boolean; quality: number } {
+  if (w.length < 25) return { leanRaw: false, tensionRaw: false, isShrug: false, quality: 1 };
+  const angleL = angleEarShoulderHipWorld(w[EAR_LEFT], w[SHOULDER_LEFT], w[HIP_LEFT]);
+  const angleR = angleEarShoulderHipWorld(w[EAR_RIGHT], w[SHOULDER_RIGHT], w[HIP_RIGHT]);
+  const avgAngle = (angleL + angleR) / 2;
+  const baselineAngle = (baseline.angleLeft + baseline.angleRight) / 2;
+  const leanRaw = avgAngle < baselineAngle * LEAN_ANGLE_RATIO;
+
+  const earYLeft = w[EAR_LEFT].y;
+  const earYRight = w[EAR_RIGHT].y;
+  const shoulderYLeft = w[SHOULDER_LEFT].y;
+  const shoulderYRight = w[SHOULDER_RIGHT].y;
+  const shoulderUpLeft = baseline.shoulderYLeft - shoulderYLeft > SHRUG_TOLERANCE_WORLD;
+  const shoulderUpRight = baseline.shoulderYRight - shoulderYRight > SHRUG_TOLERANCE_WORLD;
+  const earStableLeft = earYLeft <= baseline.earYLeft + SHRUG_TOLERANCE_WORLD;
+  const earStableRight = earYRight <= baseline.earYRight + SHRUG_TOLERANCE_WORLD;
+  const isShrug = (shoulderUpLeft && earStableLeft) || (shoulderUpRight && earStableRight);
+
+  const avgShoulderY = (shoulderYLeft + shoulderYRight) / 2;
+  const baselineShoulderY = (baseline.shoulderYLeft + baseline.shoulderYRight) / 2;
+  const avgEarY = (earYLeft + earYRight) / 2;
+  const baselineEarY = (baseline.earYLeft + baseline.earYRight) / 2;
+  const shouldersHigh = baselineShoulderY - avgShoulderY > TENSION_SHOULDER_UP_WORLD_M;
+  const earNotDropped = avgEarY <= baselineEarY + SHRUG_TOLERANCE_WORLD;
+  const shoulderSymmetry = Math.abs(shoulderYLeft - shoulderYRight) <= FRONT_SHOULDER_SYMMETRY_TOLERANCE_M;
+  const tensionFromElevation = shouldersHigh && earNotDropped && !leanRaw && shoulderSymmetry;
+
+  const vertLeft = Math.abs(w[EAR_LEFT].y - w[SHOULDER_LEFT].y);
+  const vertRight = Math.abs(w[EAR_RIGHT].y - w[SHOULDER_RIGHT].y);
+  const avgVert = (vertLeft + vertRight) / 2;
+  const baselineVert = (baseline.earShoulderVertLeft + baseline.earShoulderVertRight) / 2;
+  const vertRatio = baselineVert > 1e-6 ? avgVert / baselineVert : 1;
+  const ratioThreshold = sensitivityToRatioThreshold(sensitivityPercent);
+  const tensionFromVertical = vertRatio < ratioThreshold && !isShrug;
+
+  const tensionRaw = tensionFromElevation || tensionFromVertical;
+
+  const quality = Math.min(1, avgAngle / baselineAngle);
+  return { leanRaw, tensionRaw, isShrug, quality };
+}
+
+/** Side view: ear–shoulder distance (7 to 11, 8 to 12) in world; alert when collapse. */
+function evaluatePostureSide(
+  w: WorldLandmark[],
+  baseline: SideViewBaseline
+): { leanRaw: boolean; tensionRaw: boolean; isShrug: boolean; quality: number } {
+  if (w.length < 25) return { leanRaw: false, tensionRaw: false, isShrug: false, quality: 1 };
+  const distLeft = dist3(w[EAR_LEFT], w[SHOULDER_LEFT]);
+  const distRight = dist3(w[EAR_RIGHT], w[SHOULDER_RIGHT]);
+  const avgDist = (distLeft + distRight) / 2;
+  const baselineDist = (baseline.distLeft + baseline.distRight) / 2;
+  const ratio = baselineDist > 1e-6 ? avgDist / baselineDist : 1;
+  const leanRaw = ratio < SIDE_VIEW_DISTANCE_RATIO;
+  const quality = Math.min(1, ratio);
+  return { leanRaw, tensionRaw: false, isShrug: false, quality };
 }
 
 export function PostureEngine() {
@@ -61,6 +207,7 @@ export function PostureEngine() {
   const playbackRef = useRef<number>(0);
   const videoTimestampRef = useRef<number>(0);
   const smoothedLandmarksRef = useRef<Landmark[]>([]);
+  const smoothedWorldLandmarksRef = useRef<WorldLandmark[]>([]);
   const sessionRecorderRef = useRef<SessionRecorder>(new SessionRecorder());
   const isRecordingRef = useRef(false);
   const qualityRef = useRef(1);
@@ -69,9 +216,12 @@ export function PostureEngine() {
   const gainNodeRef = useRef<GainNode | null>(null);
   const playbackStartTimeRef = useRef<number>(0);
 
+  const [viewMode, setViewMode] = useState<ViewMode>("front");
+  const [sensitivity, setSensitivity] = useState(35); // 0–100; 35 ≈ 12% shrink (default)
   const [isCalibrated, setIsCalibrated] = useState(false);
-  const [baseline, setBaseline] = useState<number | null>(null);
-  const [isSlouch, setIsSlouch] = useState(false);
+  const [baseline, setBaseline] = useState<PostureBaseline | null>(null);
+  const [sideViewBaseline, setSideViewBaseline] = useState<SideViewBaseline | null>(null);
+  const [alertType, setAlertType] = useState<PostureAlertType>(null);
   const [landmarks, setLandmarks] = useState<Landmark[]>([]);
   const [isPoseReady, setIsPoseReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -81,12 +231,20 @@ export function PostureEngine() {
   const [playbackLandmarks, setPlaybackLandmarks] = useState<Landmark[]>([]);
   const [playbackSlouch, setPlaybackSlouch] = useState(false);
 
-  const baselineRef = useRef<number | null>(null);
+  const baselineRef = useRef<PostureBaseline | null>(null);
+  const sideViewBaselineRef = useRef<SideViewBaseline | null>(null);
   const isCalibratedRef = useRef(false);
+  const viewModeRef = useRef<ViewMode>("front");
+  const sensitivityRef = useRef(35);
+  const leanFramesRef = useRef(0);
+  const tensionFramesRef = useRef(0);
   useEffect(() => {
     baselineRef.current = baseline;
+    sideViewBaselineRef.current = sideViewBaseline;
     isCalibratedRef.current = isCalibrated;
-  }, [baseline, isCalibrated]);
+    viewModeRef.current = viewMode;
+    sensitivityRef.current = sensitivity;
+  }, [baseline, sideViewBaseline, isCalibrated, viewMode, sensitivity]);
   useEffect(() => {
     isRecordingRef.current = isRecording;
   }, [isRecording]);
@@ -136,7 +294,8 @@ export function PostureEngine() {
     const gain = gainNodeRef.current;
     const ctx = audioContextRef.current;
     if (!gain || !ctx) return;
-    if (isSlouch) {
+    const isAlert = alertType != null;
+    if (isAlert) {
       const q = qualityRef.current;
       const severity = 1 - Math.max(0, q);
       gain.gain.setTargetAtTime(
@@ -148,7 +307,7 @@ export function PostureEngine() {
     } else {
       gain.gain.setTargetAtTime(0, ctx.currentTime, 0.05);
     }
-  }, [isSlouch]);
+  }, [alertType]);
 
   // Initialize MediaPipe Pose
   useEffect(() => {
@@ -191,14 +350,52 @@ export function PostureEngine() {
   }, []);
 
   const handleCalibrate = useCallback(() => {
-    const current = smoothedLandmarksRef.current;
-    if (current.length < 13) return;
-    const leftD = verticalDistanceEarShoulder(current[EAR_LEFT], current[SHOULDER_LEFT]);
-    const rightD = verticalDistanceEarShoulder(current[EAR_RIGHT], current[SHOULDER_RIGHT]);
-    const avg = (leftD + rightD) / 2;
-    setBaseline(avg);
+    const world = smoothedWorldLandmarksRef.current;
+    if (world.length < 25) return;
+    const mode = viewModeRef.current;
+    if (mode === "front") {
+      const angleLeft = angleEarShoulderHipWorld(
+        world[EAR_LEFT],
+        world[SHOULDER_LEFT],
+        world[HIP_LEFT]
+      );
+      const angleRight = angleEarShoulderHipWorld(
+        world[EAR_RIGHT],
+        world[SHOULDER_RIGHT],
+        world[HIP_RIGHT]
+      );
+      const bl: PostureBaseline = {
+        angleLeft,
+        angleRight,
+        earYLeft: world[EAR_LEFT].y,
+        earYRight: world[EAR_RIGHT].y,
+        shoulderYLeft: world[SHOULDER_LEFT].y,
+        shoulderYRight: world[SHOULDER_RIGHT].y,
+        earShoulderVertLeft: Math.abs(world[EAR_LEFT].y - world[SHOULDER_LEFT].y),
+        earShoulderVertRight: Math.abs(world[EAR_RIGHT].y - world[SHOULDER_RIGHT].y),
+      };
+      setBaseline(bl);
+      setSideViewBaseline(null);
+    } else {
+      const distLeft = dist3(world[EAR_LEFT], world[SHOULDER_LEFT]);
+      const distRight = dist3(world[EAR_RIGHT], world[SHOULDER_RIGHT]);
+      setSideViewBaseline({ distLeft, distRight });
+      setBaseline(null);
+    }
     setIsCalibrated(true);
-    setIsSlouch(false);
+    setAlertType(null);
+    leanFramesRef.current = 0;
+    tensionFramesRef.current = 0;
+  }, []);
+
+  const handleToggleViewMode = useCallback(() => {
+    setViewMode((prev) => (prev === "front" ? "side" : "front"));
+    setBaseline(null);
+    setSideViewBaseline(null);
+    setIsCalibrated(false);
+    setAlertType(null);
+    leanFramesRef.current = 0;
+    tensionFramesRef.current = 0;
   }, []);
 
   const handleStartSession = useCallback(() => {
@@ -255,8 +452,12 @@ export function PostureEngine() {
           videoTimestampRef.current += 1;
           const result = p.detectForVideo(webcam, videoTimestampRef.current);
           const raw = result?.landmarks?.[0] ?? [];
+          const rawWorld = result?.worldLandmarks?.[0] ?? [];
           if (raw.length === 0) {
             setLandmarks([]);
+            leanFramesRef.current = 0;
+            tensionFramesRef.current = 0;
+            setAlertType(null);
           } else {
             const smoothed = raw.map((lm, i) =>
               lowPass(
@@ -268,23 +469,70 @@ export function PostureEngine() {
             smoothedLandmarksRef.current = smoothed;
             setLandmarks(smoothed);
 
+            const worldSmoothed: WorldLandmark[] = rawWorld.map((lm, i) =>
+              lowPassWorld(
+                smoothedWorldLandmarksRef.current[i],
+                { x: lm.x, y: lm.y, z: lm.z },
+                SMOOTHING_ALPHA
+              )
+            );
+            smoothedWorldLandmarksRef.current = worldSmoothed;
+
+            const mode = viewModeRef.current;
             const base = baselineRef.current;
+            const sideBase = sideViewBaselineRef.current;
             let quality = 1;
-            if (isCalibratedRef.current && base != null && base > 0) {
-              const leftD = verticalDistanceEarShoulder(
-                smoothed[EAR_LEFT],
-                smoothed[SHOULDER_LEFT]
+            if (isCalibratedRef.current && mode === "front" && base != null) {
+              const { leanRaw, tensionRaw, isShrug, quality: q } = evaluatePostureFront(
+                worldSmoothed,
+                base,
+                sensitivityRef.current
               );
-              const rightD = verticalDistanceEarShoulder(
-                smoothed[EAR_RIGHT],
-                smoothed[SHOULDER_RIGHT]
-              );
-              const avg = (leftD + rightD) / 2;
-              quality = Math.min(1, avg / base);
+              quality = q;
               qualityRef.current = quality;
-              setIsSlouch(avg <= base * SLOUCH_THRESHOLD);
+
+              const leanCounts = leanRaw && !isShrug;
+              const tensionCounts = tensionRaw;
+              if (leanCounts) {
+                leanFramesRef.current += 1;
+                tensionFramesRef.current = 0;
+              } else if (tensionCounts) {
+                tensionFramesRef.current += 1;
+                leanFramesRef.current = 0;
+              } else {
+                leanFramesRef.current = 0;
+                tensionFramesRef.current = 0;
+              }
+
+              const leanPersisted = leanFramesRef.current >= PERSISTENCE_FRAMES;
+              const tensionPersisted = tensionFramesRef.current >= PERSISTENCE_FRAMES;
+              setAlertType((prev) => {
+                if (leanPersisted) return "lean";
+                if (tensionPersisted) return "tension";
+                return null;
+              });
+            } else if (isCalibratedRef.current && mode === "side" && sideBase != null) {
+              const { leanRaw, quality: q } = evaluatePostureSide(
+                worldSmoothed,
+                sideBase
+              );
+              quality = q;
+              qualityRef.current = quality;
+
+              if (leanRaw) {
+                leanFramesRef.current += 1;
+                tensionFramesRef.current = 0;
+              } else {
+                leanFramesRef.current = 0;
+                tensionFramesRef.current = 0;
+              }
+              const leanPersisted = leanFramesRef.current >= PERSISTENCE_FRAMES;
+              setAlertType(leanPersisted ? "lean" : null);
             } else {
               qualityRef.current = 1;
+              leanFramesRef.current = 0;
+              tensionFramesRef.current = 0;
+              setAlertType(null);
             }
 
             if (isRecordingRef.current) {
@@ -318,7 +566,7 @@ export function PostureEngine() {
       const frame = frames[frameIndex];
       if (frame) {
         setPlaybackLandmarks(frame.landmarks);
-        setPlaybackSlouch(frame.quality < SLOUCH_THRESHOLD);
+        setPlaybackSlouch(frame.quality < QUALITY_ALERT_THRESHOLD);
       }
       playbackRef.current = requestAnimationFrame(tick);
     }
@@ -357,8 +605,8 @@ export function PostureEngine() {
       canvas.height = h;
     }
     ctx.clearRect(0, 0, w, h);
-    drawSkeleton(ctx, landmarks, isSlouch, w, h);
-  }, [landmarks, isSlouch, isPlayback, sessionRecording, playbackLandmarks, playbackSlouch]);
+    drawSkeleton(ctx, landmarks, alertType != null, w, h);
+  }, [landmarks, alertType, isPlayback, sessionRecording, playbackLandmarks, playbackSlouch]);
 
   const videoConstraints: MediaTrackConstraints = {
     width: { ideal: 640 },
@@ -415,7 +663,7 @@ export function PostureEngine() {
           </div>
         )}
         <AnimatePresence>
-          {(showLiveView ? isSlouch : playbackSlouch) && (
+          {(showLiveView ? alertType : playbackSlouch) && (
             <motion.div
               initial={{ opacity: 0, y: 4 }}
               animate={{ opacity: 1, y: 0 }}
@@ -423,22 +671,62 @@ export function PostureEngine() {
               className="absolute top-10 left-2 right-2 flex items-center justify-center gap-2 rounded-lg bg-red-500/90 text-white px-3 py-2 text-sm font-medium"
             >
               <AlertTriangle className="shrink-0" size={18} />
-              Tension Alert
+              {showLiveView && alertType === "tension"
+                ? "Tension Detected"
+                : showLiveView && alertType === "lean"
+                  ? "Lean Detected"
+                  : "Tension Alert"}
             </motion.div>
           )}
         </AnimatePresence>
       </div>
 
-      <div className="flex flex-wrap items-center justify-center gap-3">
-        <button
-          type="button"
-          onClick={handleCalibrate}
-          disabled={!isPoseReady || landmarks.length === 0 || isRecording}
-          className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50 disabled:pointer-events-none"
-        >
-          <Activity size={18} />
-          Calibrate
-        </button>
+      <div className="w-full max-w-[640px] space-y-4">
+        <div className="flex flex-wrap items-center justify-center gap-3">
+          <button
+            type="button"
+            onClick={handleToggleViewMode}
+            disabled={isRecording}
+            className="inline-flex items-center gap-2 rounded-lg bg-zinc-600 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-500 disabled:opacity-50 disabled:pointer-events-none"
+            title={viewMode === "front" ? "Switch to Side View (ear–shoulder distance)" : "Switch to Front View (angle + symmetry)"}
+          >
+            <Camera size={18} />
+            {viewMode === "front" ? "Front View" : "Side View"}
+          </button>
+          <button
+            type="button"
+            onClick={handleCalibrate}
+            disabled={!isPoseReady || landmarks.length === 0 || isRecording}
+            className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50 disabled:pointer-events-none"
+          >
+            <Activity size={18} />
+            Calibrate
+          </button>
+
+        {viewMode === "front" && (
+          <div className="w-full flex flex-col gap-1">
+            <label htmlFor="sensitivity" className="text-sm text-zinc-400 flex justify-between">
+              <span>Sensitivity</span>
+              <span>
+                {Math.round(SENSITIVITY_MIN_PCT + (sensitivity / 100) * (SENSITIVITY_MAX_PCT - SENSITIVITY_MIN_PCT))}% shrink
+              </span>
+            </label>
+            <input
+              id="sensitivity"
+              type="range"
+              min={0}
+              max={100}
+              value={sensitivity}
+              onChange={(e) => setSensitivity(Number(e.target.value))}
+              className="w-full h-2 rounded-lg appearance-none bg-zinc-700 accent-emerald-500"
+              aria-label="Sensitivity: 5% very strict to 25% very loose"
+            />
+            <div className="flex justify-between text-xs text-zinc-500">
+              <span>Very Strict (5%)</span>
+              <span>Very Loose (25%)</span>
+            </div>
+          </div>
+        )}
 
         {!isRecording && (
           <button
@@ -448,7 +736,7 @@ export function PostureEngine() {
             className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50 disabled:pointer-events-none"
           >
             <Play size={18} />
-            Start Session
+            {sessionRecording ? "Continue Session" : "Start Session"}
           </button>
         )}
         {isRecording && (
@@ -503,9 +791,18 @@ export function PostureEngine() {
 
         {isCalibrated && showLiveView && (
           <span className="text-zinc-400 text-sm">
-            {isSlouch ? "Slouch detected" : "Good posture"}
+            {viewMode === "side"
+              ? alertType === "lean"
+                ? "Lean detected"
+                : "Good posture"
+              : alertType === "tension"
+                ? "Tension detected"
+                : alertType === "lean"
+                  ? "Lean detected"
+                  : "Good posture"}
           </span>
         )}
+        </div>
       </div>
 
       {sessionRecording && !isPlayback && (
