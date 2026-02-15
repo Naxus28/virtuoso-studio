@@ -243,6 +243,8 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
   const [playbackSlouch, setPlaybackSlouch] = useState(false);
   const [isStopped, setIsStopped] = useState(false);
   const [sessionName, setSessionName] = useState("");
+  /** When true, detection loop stops (after stop / save / discard until start again). */
+  const [isDetectionPaused, setIsDetectionPaused] = useState(false);
   /** When replaying from library, show session name, view mode, sensitivity for review UI */
   const [replaySessionInfo, setReplaySessionInfo] = useState<{
     name: string;
@@ -440,6 +442,7 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
     setIsRecording(true);
     setSessionRecording(null);
     setIsPlayback(false);
+    setIsDetectionPaused(false);
     audioContextRef.current?.resume();
   }, []);
 
@@ -449,6 +452,8 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
     setSessionRecording(rec);
     setIsStopped(true);
     setIsPlayback(false);
+    setIsDetectionPaused(true);
+    setAlertType(null);
     // Generate default name
     const count = getStoredSessions().length + 1;
     const now = new Date();
@@ -469,6 +474,7 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
     setIsRecording(true);
     setIsStopped(false);
     setIsPlayback(false);
+    setIsDetectionPaused(false);
   }, []);
 
   const handleSaveSession = useCallback(() => {
@@ -487,6 +493,8 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
     setIsStopped(false);
     setSessionName("");
     setIsPlayback(false);
+    setIsDetectionPaused(true);
+    setAlertType(null);
   }, [sessionRecording, sessionName]);
 
   const handleReviewSession = useCallback(() => {
@@ -513,11 +521,13 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
     setIsStopped(false);
     setIsPlayback(false);
     setSessionName("");
+    setIsDetectionPaused(true);
+    setAlertType(null);
   }, []);
 
-  // Process video frames (only when not in playback)
+  // Process video frames (only when not in playback and detection not paused)
   useEffect(() => {
-    if (isPlayback) return;
+    if (isPlayback || isDetectionPaused) return;
     const pose = poseRef.current;
     const webcam = webcamRef.current?.video;
     if (!pose || !webcam || !isPoseReady) return;
@@ -657,7 +667,7 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
     }
     animationRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(animationRef.current);
-  }, [isPoseReady, isPlayback]);
+  }, [isPoseReady, isPlayback, isDetectionPaused]);
 
   // Playback loop: advance frame index and set playbackLandmarks/playbackSlouch
   useEffect(() => {
@@ -833,8 +843,8 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
               </div>
             )}
 
-            {/* Sensitivity slider */}
-            <div className="flex flex-col gap-1">
+            {/* Sensitivity slider — locked during recording so session metrics stay consistent */}
+            <div className={`flex flex-col gap-1 ${isRecording ? "opacity-60 pointer-events-none" : ""}`}>
               <label htmlFor="sensitivity" className="text-sm text-zinc-400 flex justify-between">
                 <span>Sensitivity</span>
                 <span>
@@ -848,8 +858,9 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
                 max={100}
                 value={sensitivity}
                 onChange={(e) => setSensitivity(Number(e.target.value))}
-                className="w-full h-2 rounded-lg appearance-none bg-zinc-700 accent-emerald-500"
-                aria-label="Sensitivity: 5% very strict to 25% very loose"
+                disabled={isRecording}
+                className="w-full h-2 rounded-lg appearance-none bg-zinc-700 accent-emerald-500 disabled:opacity-70"
+                aria-label="Sensitivity: 1% very strict to 25% very loose. Locked during recording."
               />
               <div className="flex justify-between text-xs text-zinc-500">
                 <span>Very Strict (5%)</span>
