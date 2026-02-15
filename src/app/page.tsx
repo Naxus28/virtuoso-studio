@@ -1,11 +1,25 @@
 import Link from "next/link";
-import { Activity, Zap, Shield } from "lucide-react";
+import { Activity, Zap, Shield, Music } from "lucide-react";
 
 export default function Home() {
   return (
     <main className="min-h-screen bg-gradient-to-b from-zinc-950 via-zinc-900 to-zinc-950 text-zinc-100">
+      {/* Nav */}
+      <nav className="relative z-20 flex items-center justify-between px-6 py-4">
+        <div className="flex items-center gap-2">
+          <Music size={22} className="text-emerald-400" />
+          <span className="text-base font-bold">Virtuoso</span>
+        </div>
+        <Link
+          href="/dashboard"
+          className="inline-flex items-center gap-2 rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2 text-sm font-medium text-zinc-300 hover:bg-zinc-700 hover:text-zinc-100 transition-colors"
+        >
+          Dashboard
+        </Link>
+      </nav>
+
       {/* Hero */}
-      <section className="relative min-h-[85vh] flex flex-col items-center justify-center px-4 overflow-hidden">
+      <section className="relative min-h-[80vh] flex flex-col items-center justify-center px-4 overflow-hidden">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_50%_at_50%_-20%,rgba(34,197,94,0.12),transparent)]" />
         <div className="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-emerald-500/30 to-transparent" />
         <div className="relative z-10 text-center max-w-2xl mx-auto">
@@ -21,20 +35,12 @@ export default function Home() {
             Real-time posture feedback so you can focus on the music—not your
             posture. Built for musicians who practice long hours.
           </p>
-          <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-            <Link
-              href="/studio"
-              className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-8 py-4 text-base font-semibold text-white shadow-lg shadow-emerald-900/30 hover:bg-emerald-500 transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-400 focus:ring-offset-2 focus:ring-offset-zinc-950"
-            >
-              Launch Studio
-            </Link>
-            <Link
-              href="/dashboard"
-              className="text-zinc-400 hover:text-zinc-100 text-sm transition-colors"
-            >
-              Sign In →
-            </Link>
-          </div>
+          <Link
+            href="/dashboard"
+            className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-8 py-4 text-base font-semibold text-white shadow-lg shadow-emerald-900/30 hover:bg-emerald-500 transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-400 focus:ring-offset-2 focus:ring-offset-zinc-950"
+          >
+            Get Started
+          </Link>
         </div>
       </section>
 
