@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import React, { useMemo, useState, useCallback } from "react";
 import { Canvas } from "@react-three/fiber";
 import * as THREE from "three";
 
@@ -31,9 +31,7 @@ const POSE_CONNECTIONS: [number, number][] = [
   [7, 11], [8, 12],
 ];
 
-/** Convert normalized image landmarks to 3D scene coords: centered, Y up.
-  * Mirror X so humanoid matches video (2D canvas uses scaleX(-1)).
-  * Negate Z so "forward" (toward camera) in real space is forward in the scene; otherwise limbs bend backward. */
+/** Convert normalized image landmarks to 3D scene coords: centered, Y up. */
 function toScene3D(lm: Landmark3D, aspect: number): [number, number, number] {
   const x = (0.5 - lm.x) * 2;
   const y = (0.5 - lm.y) * 2;
@@ -53,27 +51,37 @@ function len(v: readonly [number, number, number]) {
 
 type Vec3 = readonly [number, number, number];
 
-/** Capsule from A to B with given radius. Uses THREE.CapsuleGeometry (axis Y). showRed = only this part turns red when alert matches. */
-function Capsule({
+// ─── Shared material ────────────────────────────────────────────────────
+
+const BODY_COLOR = "#c8ccd0";
+const MANNEQUIN_MATERIAL_PROPS = {
+  metalness: 0.05,
+  roughness: 0.65,
+  transparent: true as const,
+  opacity: 0.97,
+};
+
+// ─── Smooth Limb Segment ────────────────────────────────────────────────
+
+/** A smooth capsule positioned between two points, with optional scale override. */
+function LimbSegment({
   start,
   end,
   radius,
   color,
-  showRed,
-  tensionIntensity,
+  scaleXZ,
 }: {
   start: Vec3;
   end: Vec3;
   radius: number;
   color: THREE.Color;
-  showRed: boolean;
-  tensionIntensity: number;
+  scaleXZ?: [number, number]; // [scaleX, scaleZ] for flattened shapes like torso
 }) {
   const { position, quaternion, cylinderHeight } = useMemo(() => {
     const d = vec([...start], [...end]);
     const totalLength = len(d);
-    const cylinderHeight = Math.max(0.01, totalLength - radius * 2);
-    const midPoint = [(start[0] + end[0]) / 2, (start[1] + end[1]) / 2, (start[2] + end[2]) / 2] as const;
+    const cylinderHeight = Math.max(0.001, totalLength - radius * 2);
+    const midPoint = mid([...start], [...end]);
     const up = new THREE.Vector3(0, 1, 0);
     const dir = new THREE.Vector3(d[0], d[1], d[2]).normalize();
     const q = new THREE.Quaternion().setFromUnitVectors(up, dir);
@@ -81,8 +89,68 @@ function Capsule({
   }, [start, end, radius]);
 
   const geometry = useMemo(() => {
-    return new THREE.CapsuleGeometry(radius, cylinderHeight, 6, 16);
+    return new THREE.CapsuleGeometry(radius, cylinderHeight, 12, 24);
   }, [radius, cylinderHeight]);
+
+  const scale = scaleXZ ? [scaleXZ[0], 1, scaleXZ[1]] as [number, number, number] : undefined;
+
+  return (
+    <group position={position} quaternion={quaternion} scale={scale}>
+      <mesh geometry={geometry}>
+        <meshStandardMaterial color={color} {...MANNEQUIN_MATERIAL_PROPS} />
+      </mesh>
+    </group>
+  );
+}
+
+/** Joint sphere at a point for smooth transitions between segments. */
+function JointSphere({ position, radius, color }: { position: Vec3; radius: number; color: THREE.Color }) {
+  return (
+    <mesh position={position}>
+      <sphereGeometry args={[radius, 20, 16]} />
+      <meshStandardMaterial color={color} {...MANNEQUIN_MATERIAL_PROPS} />
+    </mesh>
+  );
+}
+
+// ─── Helper types ───────────────────────────────────────────────────────
+
+type PostureReview3DProps = {
+  landmarks: Landmark3D[];
+  quality: number;
+  qualityAlertThreshold?: number;
+  alertType?: "lean" | "tension" | null;
+  width: number;
+  height: number;
+};
+
+function segmentKey(i: number, j: number): string {
+  return i < j ? `${i}-${j}` : `${j}-${i}`;
+}
+
+const NECK_SEGMENTS = new Set(["7-11", "8-12"]);
+const SHOULDER_SEGMENTS = new Set(["11-12", "11-13", "12-14"]);
+
+// ─── SolidBody (fallback — original capsule style) ──────────────────────
+
+function Capsule({
+  start, end, radius, color, showRed, tensionIntensity,
+}: {
+  start: Vec3; end: Vec3; radius: number; color: THREE.Color;
+  showRed: boolean; tensionIntensity: number;
+}) {
+  const { position, quaternion, cylinderHeight } = useMemo(() => {
+    const d = vec([...start], [...end]);
+    const totalLength = len(d);
+    const cylinderHeight = Math.max(0.01, totalLength - radius * 2);
+    const midPoint = mid([...start], [...end]);
+    const up = new THREE.Vector3(0, 1, 0);
+    const dir = new THREE.Vector3(d[0], d[1], d[2]).normalize();
+    const q = new THREE.Quaternion().setFromUnitVectors(up, dir);
+    return { position: midPoint, quaternion: q, cylinderHeight };
+  }, [start, end, radius]);
+
+  const geometry = useMemo(() => new THREE.CapsuleGeometry(radius, cylinderHeight, 6, 16), [radius, cylinderHeight]);
 
   const redAmount = showRed ? Math.min(1, tensionIntensity * 1.2) : 0;
   const finalColor = useMemo(() => {
@@ -94,39 +162,53 @@ function Capsule({
   return (
     <group position={position} quaternion={quaternion}>
       <mesh geometry={geometry}>
-        <meshStandardMaterial
-          color={finalColor}
-          metalness={0.12}
-          roughness={0.8}
-          transparent
-          opacity={0.97}
-        />
+        <meshStandardMaterial color={finalColor} metalness={0.12} roughness={0.8} transparent opacity={0.97} />
       </mesh>
     </group>
   );
 }
 
-type PostureReview3DProps = {
-  landmarks: Landmark3D[];
-  quality: number;
-  qualityAlertThreshold?: number;
-  /** "lean" = red on neck only; "tension" = red on shoulders only */
-  alertType?: "lean" | "tension" | null;
-  width: number;
-  height: number;
-};
+function SolidBody({
+  points, tensionIntensity, alertType,
+}: {
+  points: [number, number, number][]; tensionIntensity: number; alertType: "lean" | "tension" | null;
+}) {
+  const baseColor = useMemo(() => new THREE.Color("#9ca3af"), []);
+  const shoulderCenter = useMemo(() => mid(points[SHOULDER_LEFT], points[SHOULDER_RIGHT]), [points]);
+  const hipCenter = useMemo(() => mid(points[HIP_LEFT], points[HIP_RIGHT]), [points]);
+  const shoulderWidth = useMemo(() => len(vec(points[SHOULDER_LEFT], points[SHOULDER_RIGHT])), [points]);
+  const headRadius = shoulderWidth * 0.38;
+  const headCenter = useMemo(() => {
+    const earMid = mid(points[EAR_LEFT], points[EAR_RIGHT]);
+    const nose = points[NOSE];
+    return [(earMid[0] + nose[0]) / 2, (earMid[1] + nose[1]) / 2 + 0.08, (earMid[2] + nose[2]) / 2] as const;
+  }, [points]);
+  const neckTop = useMemo(() => [headCenter[0], headCenter[1] - headRadius, headCenter[2]] as const, [headCenter, headRadius]);
+  const neckBottom = useMemo(() => {
+    const full = [neckTop[0] - shoulderCenter[0], neckTop[1] - shoulderCenter[1], neckTop[2] - shoulderCenter[2]] as const;
+    return [shoulderCenter[0] + full[0] * 0.68, shoulderCenter[1] + full[1] * 0.68, shoulderCenter[2] + full[2] * 0.68] as const;
+  }, [shoulderCenter, neckTop]);
 
-/** Base body color: neutral grey like reference humanoid; tension shifts to red. */
-const BODY_COLOR = "#9ca3af";
-
-function segmentKey(i: number, j: number): string {
-  return i < j ? `${i}-${j}` : `${j}-${i}`;
+  return (
+    <group>
+      <mesh position={headCenter}><sphereGeometry args={[headRadius, 24, 20]} /><meshStandardMaterial color={baseColor.clone()} metalness={0.1} roughness={0.85} /></mesh>
+      <Capsule start={neckBottom} end={neckTop} radius={shoulderWidth * 0.1} color={baseColor.clone()} showRed={alertType === "lean"} tensionIntensity={tensionIntensity} />
+      <Capsule start={hipCenter} end={neckBottom} radius={shoulderWidth * 0.38} color={baseColor.clone()} showRed={false} tensionIntensity={tensionIntensity} />
+      <Capsule start={points[SHOULDER_LEFT]} end={points[ELBOW_LEFT]} radius={shoulderWidth * 0.12} color={baseColor.clone()} showRed={alertType === "tension"} tensionIntensity={tensionIntensity} />
+      <Capsule start={points[SHOULDER_RIGHT]} end={points[ELBOW_RIGHT]} radius={shoulderWidth * 0.12} color={baseColor.clone()} showRed={alertType === "tension"} tensionIntensity={tensionIntensity} />
+      <Capsule start={points[ELBOW_LEFT]} end={points[WRIST_LEFT]} radius={shoulderWidth * 0.08} color={baseColor.clone()} showRed={false} tensionIntensity={tensionIntensity} />
+      <Capsule start={points[ELBOW_RIGHT]} end={points[WRIST_RIGHT]} radius={shoulderWidth * 0.08} color={baseColor.clone()} showRed={false} tensionIntensity={tensionIntensity} />
+      <Capsule start={points[HIP_LEFT]} end={points[KNEE_LEFT]} radius={shoulderWidth * 0.16} color={baseColor.clone()} showRed={false} tensionIntensity={tensionIntensity} />
+      <Capsule start={points[HIP_RIGHT]} end={points[KNEE_RIGHT]} radius={shoulderWidth * 0.16} color={baseColor.clone()} showRed={false} tensionIntensity={tensionIntensity} />
+      <Capsule start={points[KNEE_LEFT]} end={points[ANKLE_LEFT]} radius={shoulderWidth * 0.12} color={baseColor.clone()} showRed={false} tensionIntensity={tensionIntensity} />
+      <Capsule start={points[KNEE_RIGHT]} end={points[ANKLE_RIGHT]} radius={shoulderWidth * 0.12} color={baseColor.clone()} showRed={false} tensionIntensity={tensionIntensity} />
+    </group>
+  );
 }
 
-const NECK_SEGMENTS = new Set(["7-11", "8-12"]);
-const SHOULDER_SEGMENTS = new Set(["11-12", "11-13", "12-14"]);
+// ─── MannequinBody (improved humanoid) ──────────────────────────────────
 
-function SolidBody({
+function MannequinBody({
   points,
   tensionIntensity,
   alertType,
@@ -135,134 +217,116 @@ function SolidBody({
   tensionIntensity: number;
   alertType: "lean" | "tension" | null;
 }) {
-  const baseColor = useMemo(() => new THREE.Color(BODY_COLOR), []);
-
+  // Derived landmarks
   const shoulderCenter = useMemo(() => mid(points[SHOULDER_LEFT], points[SHOULDER_RIGHT]), [points]);
   const hipCenter = useMemo(() => mid(points[HIP_LEFT], points[HIP_RIGHT]), [points]);
+  const earCenter = useMemo(() => mid(points[EAR_LEFT], points[EAR_RIGHT]), [points]);
   const shoulderWidth = useMemo(() => len(vec(points[SHOULDER_LEFT], points[SHOULDER_RIGHT])), [points]);
-  const scale = 1.0;
-  const headRadius = shoulderWidth * 0.38 * scale;
 
-  const headCenter = useMemo(() => {
-    const earMid = mid(points[EAR_LEFT], points[EAR_RIGHT]);
+  // Proportional scale factor based on shoulder width
+  const s = shoulderWidth;
+
+  // Head: slightly elongated vertically
+  const headCenter = useMemo<Vec3>(() => {
     const nose = points[NOSE];
-    return [(earMid[0] + nose[0]) / 2, (earMid[1] + nose[1]) / 2 + 0.08, (earMid[2] + nose[2]) / 2] as const;
-  }, [points]);
-
-  const neckTop = useMemo(() => [headCenter[0], headCenter[1] - headRadius, headCenter[2]] as const, [headCenter, headRadius]);
-  const neckBottom = useMemo(() => {
-    const full = [neckTop[0] - shoulderCenter[0], neckTop[1] - shoulderCenter[1], neckTop[2] - shoulderCenter[2]] as const;
-    const neckLengthRatio = 0.32;
     return [
-      shoulderCenter[0] + full[0] * (1 - neckLengthRatio),
-      shoulderCenter[1] + full[1] * (1 - neckLengthRatio),
-      shoulderCenter[2] + full[2] * (1 - neckLengthRatio),
-    ] as const;
+      (earCenter[0] + nose[0]) / 2,
+      (earCenter[1] + nose[1]) / 2 + s * 0.15,
+      (earCenter[2] + nose[2]) / 2,
+    ];
+  }, [points, earCenter, s]);
+  const headRadius = s * 0.36;
+
+  // Neck: from shoulder center toward head
+  const neckTop = useMemo<Vec3>(() => [
+    headCenter[0], headCenter[1] - headRadius * 0.85, headCenter[2],
+  ], [headCenter, headRadius]);
+  const neckBottom = useMemo<Vec3>(() => {
+    const d = vec([...shoulderCenter], [...neckTop]);
+    const ratio = 0.35;
+    return [
+      shoulderCenter[0] + d[0] * ratio,
+      shoulderCenter[1] + d[1] * ratio,
+      shoulderCenter[2] + d[2] * ratio,
+    ];
   }, [shoulderCenter, neckTop]);
 
-  const showRedNeck = alertType === "lean";
-  const showRedShoulders = alertType === "tension";
+  // Colors
+  const baseColor = useMemo(() => new THREE.Color(BODY_COLOR), []);
+  const neckColor = useMemo(() => {
+    if (alertType !== "lean" || tensionIntensity <= 0) return baseColor.clone();
+    return baseColor.clone().lerp(new THREE.Color("#ef4444"), Math.min(1, tensionIntensity * 1.2));
+  }, [baseColor, alertType, tensionIntensity]);
+  const shoulderColor = useMemo(() => {
+    if (alertType !== "tension" || tensionIntensity <= 0) return baseColor.clone();
+    return baseColor.clone().lerp(new THREE.Color("#ef4444"), Math.min(1, tensionIntensity * 1.2));
+  }, [baseColor, alertType, tensionIntensity]);
 
   return (
     <group>
-      {/* Head — no red (only neck shows for lean) */}
-      <mesh position={headCenter}>
-        <sphereGeometry args={[headRadius, 24, 20]} />
-        <meshStandardMaterial color={baseColor.clone()} metalness={0.1} roughness={0.85} />
+      {/* ── Head ── */}
+      <mesh position={headCenter} scale={[1, 1.15, 1]}>
+        <sphereGeometry args={[headRadius, 28, 22]} />
+        <meshStandardMaterial color={baseColor} {...MANNEQUIN_MATERIAL_PROPS} />
       </mesh>
 
-      {/* Neck — red only when lean (head tilted) */}
-      <Capsule
-        start={neckBottom}
-        end={neckTop}
-        radius={shoulderWidth * 0.1 * scale}
-        color={baseColor.clone()}
-        showRed={showRedNeck}
-        tensionIntensity={tensionIntensity}
-      />
+      {/* ── Neck ── */}
+      <LimbSegment start={neckBottom} end={neckTop} radius={s * 0.09} color={neckColor} />
+      <JointSphere position={neckBottom} radius={s * 0.1} color={neckColor} />
 
-      {/* Torso — never red (shoulders or neck only per alert type) */}
-      <Capsule
+      {/* ── Torso: flattened capsule (wider X, thinner Z) ── */}
+      <LimbSegment
         start={hipCenter}
         end={neckBottom}
-        radius={shoulderWidth * 0.38 * scale}
-        color={baseColor.clone()}
-        showRed={false}
-        tensionIntensity={tensionIntensity}
+        radius={s * 0.34}
+        color={baseColor}
+        scaleXZ={[1.15, 0.65]}
       />
 
-      {/* Upper arms — red only when tension (shoulders) */}
-      <Capsule
-        start={points[SHOULDER_LEFT]}
-        end={points[ELBOW_LEFT]}
-        radius={shoulderWidth * 0.12 * scale}
-        color={baseColor.clone()}
-        showRed={showRedShoulders}
-        tensionIntensity={tensionIntensity}
-      />
-      <Capsule
-        start={points[SHOULDER_RIGHT]}
-        end={points[ELBOW_RIGHT]}
-        radius={shoulderWidth * 0.12 * scale}
-        color={baseColor.clone()}
-        showRed={showRedShoulders}
-        tensionIntensity={tensionIntensity}
-      />
+      {/* ── Shoulder joints ── */}
+      <JointSphere position={points[SHOULDER_LEFT]} radius={s * 0.13} color={shoulderColor} />
+      <JointSphere position={points[SHOULDER_RIGHT]} radius={s * 0.13} color={shoulderColor} />
 
-      {/* Forearms — never red */}
-      <Capsule
-        start={points[ELBOW_LEFT]}
-        end={points[WRIST_LEFT]}
-        radius={shoulderWidth * 0.08 * scale}
-        color={baseColor.clone()}
-        showRed={false}
-        tensionIntensity={tensionIntensity}
-      />
-      <Capsule
-        start={points[ELBOW_RIGHT]}
-        end={points[WRIST_RIGHT]}
-        radius={shoulderWidth * 0.08 * scale}
-        color={baseColor.clone()}
-        showRed={false}
-        tensionIntensity={tensionIntensity}
-      />
+      {/* ── Upper arms ── */}
+      <LimbSegment start={points[SHOULDER_LEFT]} end={points[ELBOW_LEFT]} radius={s * 0.10} color={shoulderColor} />
+      <LimbSegment start={points[SHOULDER_RIGHT]} end={points[ELBOW_RIGHT]} radius={s * 0.10} color={shoulderColor} />
 
-      {/* Legs — never red */}
-      <Capsule
-        start={points[HIP_LEFT]}
-        end={points[KNEE_LEFT]}
-        radius={shoulderWidth * 0.16 * scale}
-        color={baseColor.clone()}
-        showRed={false}
-        tensionIntensity={tensionIntensity}
-      />
-      <Capsule
-        start={points[HIP_RIGHT]}
-        end={points[KNEE_RIGHT]}
-        radius={shoulderWidth * 0.16 * scale}
-        color={baseColor.clone()}
-        showRed={false}
-        tensionIntensity={tensionIntensity}
-      />
-      <Capsule
-        start={points[KNEE_LEFT]}
-        end={points[ANKLE_LEFT]}
-        radius={shoulderWidth * 0.12 * scale}
-        color={baseColor.clone()}
-        showRed={false}
-        tensionIntensity={tensionIntensity}
-      />
-      <Capsule
-        start={points[KNEE_RIGHT]}
-        end={points[ANKLE_RIGHT]}
-        radius={shoulderWidth * 0.12 * scale}
-        color={baseColor.clone()}
-        showRed={false}
-        tensionIntensity={tensionIntensity}
-      />
+      {/* ── Elbow joints ── */}
+      <JointSphere position={points[ELBOW_LEFT]} radius={s * 0.085} color={baseColor} />
+      <JointSphere position={points[ELBOW_RIGHT]} radius={s * 0.085} color={baseColor} />
+
+      {/* ── Forearms ── */}
+      <LimbSegment start={points[ELBOW_LEFT]} end={points[WRIST_LEFT]} radius={s * 0.07} color={baseColor} />
+      <LimbSegment start={points[ELBOW_RIGHT]} end={points[WRIST_RIGHT]} radius={s * 0.07} color={baseColor} />
+
+      {/* ── Wrist joints ── */}
+      <JointSphere position={points[WRIST_LEFT]} radius={s * 0.055} color={baseColor} />
+      <JointSphere position={points[WRIST_RIGHT]} radius={s * 0.055} color={baseColor} />
+
+      {/* ── Hip joints ── */}
+      <JointSphere position={points[HIP_LEFT]} radius={s * 0.14} color={baseColor} />
+      <JointSphere position={points[HIP_RIGHT]} radius={s * 0.14} color={baseColor} />
+
+      {/* ── Thighs ── */}
+      <LimbSegment start={points[HIP_LEFT]} end={points[KNEE_LEFT]} radius={s * 0.13} color={baseColor} />
+      <LimbSegment start={points[HIP_RIGHT]} end={points[KNEE_RIGHT]} radius={s * 0.13} color={baseColor} />
+
+      {/* ── Knee joints ── */}
+      <JointSphere position={points[KNEE_LEFT]} radius={s * 0.10} color={baseColor} />
+      <JointSphere position={points[KNEE_RIGHT]} radius={s * 0.10} color={baseColor} />
+
+      {/* ── Shins ── */}
+      <LimbSegment start={points[KNEE_LEFT]} end={points[ANKLE_LEFT]} radius={s * 0.09} color={baseColor} />
+      <LimbSegment start={points[KNEE_RIGHT]} end={points[ANKLE_RIGHT]} radius={s * 0.09} color={baseColor} />
+
+      {/* ── Ankle joints ── */}
+      <JointSphere position={points[ANKLE_LEFT]} radius={s * 0.065} color={baseColor} />
+      <JointSphere position={points[ANKLE_RIGHT]} radius={s * 0.065} color={baseColor} />
     </group>
   );
 }
+
+// ─── Main scene ─────────────────────────────────────────────────────────
 
 function SkeletonAndBody({
   landmarks,
@@ -283,6 +347,9 @@ function SkeletonAndBody({
   const tensionIntensity = quality < qualityAlertThreshold
     ? Math.min(1, (qualityAlertThreshold - quality) / qualityAlertThreshold)
     : 0;
+
+  const [mannequinError, setMannequinError] = useState(false);
+  const onMannequinError = useCallback(() => setMannequinError(true), []);
 
   const skeletonLinesWithKey = useMemo(() => {
     const sk: { start: [number, number, number]; end: [number, number, number]; key: string }[] = [];
@@ -307,12 +374,18 @@ function SkeletonAndBody({
 
   return (
     <group>
-      {/* Solid humanoid body — red only on neck (lean) or shoulders (tension) */}
+      {/* Humanoid body */}
       {hasEnoughPoints && (
-        <SolidBody points={points} tensionIntensity={tensionIntensity} alertType={alertType} />
+        mannequinError ? (
+          <SolidBody points={points} tensionIntensity={tensionIntensity} alertType={alertType} />
+        ) : (
+          <MannequinErrorBoundary onError={onMannequinError}>
+            <MannequinBody points={points} tensionIntensity={tensionIntensity} alertType={alertType} />
+          </MannequinErrorBoundary>
+        )
       )}
 
-      {/* Skeleton: neck segments red when lean, shoulder segments red when tension */}
+      {/* Skeleton lines on top */}
       {skeletonLinesWithKey.map((line, idx) => {
         const isNeck = NECK_SEGMENTS.has(line.key);
         const isShoulder = SHOULDER_SEGMENTS.has(line.key);
@@ -327,13 +400,33 @@ function SkeletonAndBody({
                 args={[new Float32Array([...line.start, ...line.end]), 3]}
               />
             </bufferGeometry>
-            <lineBasicMaterial color={lineColor} />
+            <lineBasicMaterial color={lineColor} depthTest={false} />
           </line>
         );
       })}
     </group>
   );
 }
+
+// ─── Error boundary ─────────────────────────────────────────────────────
+
+class MannequinErrorBoundary extends React.Component<
+  { children: React.ReactNode; onError: () => void },
+  { hasError: boolean }
+> {
+  constructor(props: { children: React.ReactNode; onError: () => void }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() { return { hasError: true }; }
+  componentDidCatch() { this.props.onError(); }
+  render() {
+    if (this.state.hasError) return null;
+    return this.props.children;
+  }
+}
+
+// ─── Root component ─────────────────────────────────────────────────────
 
 export function PostureReview3D({
   landmarks,
@@ -349,12 +442,7 @@ export function PostureReview3D({
     <div className="absolute inset-0 w-full h-full pointer-events-none">
       <Canvas
         orthographic
-        camera={{
-          position: [0, 0, 5],
-          zoom: 140,
-          near: 0.1,
-          far: 100,
-        }}
+        camera={{ position: [0, 0, 5], zoom: 140, near: 0.1, far: 100 }}
         gl={{ alpha: true, antialias: true }}
         className="w-full h-full"
       >
