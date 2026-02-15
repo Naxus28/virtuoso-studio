@@ -160,14 +160,19 @@ export class Piano extends Instrument {
     let filtered = { ...result };
 
     // Whole-body lean is normal piano playing posture — suppress leanRaw.
-    // The SideViewStrategy only sets leanRaw when the body tilts as a unit
-    // (ear-shoulder distance stable), so head-forward/neck-curve are already
-    // reported as tensionRaw and won't be suppressed here.
     if (filtered.leanRaw) {
       filtered.leanRaw = false;
       if (!filtered.tensionRaw) {
         filtered.feedback = "Good posture";
       }
+    }
+
+    // Neck curve / looking down is normal for pianists (watching the keys).
+    // Suppress neck-curve alerts but keep head-forward and shrug.
+    if (filtered.tensionRaw && filtered.feedback.startsWith("Neck curving")) {
+      filtered.tensionRaw = false;
+      filtered.feedback = "Good posture";
+      filtered.quality = Math.max(filtered.quality, 0.9);
     }
 
     // Wrists extended beyond baseline → pianist reaching for keys, not shrugging.

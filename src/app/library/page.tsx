@@ -9,7 +9,7 @@ import type { InstrumentId } from "@/lib/posture-engines/EngineFactory";
 import { ConfirmDeleteModal } from "@/components/ConfirmDeleteModal";
 
 function formatDate(ms: number): string {
-  return new Date(ms).toLocaleDateString(undefined, {
+  return new Date(ms).toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",

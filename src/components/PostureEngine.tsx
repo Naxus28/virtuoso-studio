@@ -62,6 +62,46 @@ const QUALITY_ALERT_THRESHOLD = 0.88;
 /** Map shoulder asymmetry (m) to chart severity for tension. Asymmetry >= this = worst (0.5). */
 const TENSION_SEVERITY_MAX_ASYMMETRY_M = 0.06;
 
+/** Calibration duration in seconds — collects frames of the musician playing. */
+const CALIBRATION_DURATION_S = 20;
+
+/** Play a C major broken chord (C4-E4-G4-C5) as a smooth calibration-done chime. */
+function playCalibrationChime() {
+  try {
+    const ctx = new AudioContext();
+    // C4=261.63, E4=329.63, G4=392.00, C5=523.25
+    const notes = [261.63, 329.63, 392.0, 523.25];
+    const noteSpacing = 0.2; // 200ms between notes (andante feel within ~1s)
+    const noteDuration = 0.6; // each note rings for 600ms
+    const gain = 0.12;
+
+    notes.forEach((freq, i) => {
+      const t = ctx.currentTime + i * noteSpacing;
+      const osc = ctx.createOscillator();
+      const env = ctx.createGain();
+
+      osc.type = "sine";
+      osc.frequency.value = freq;
+
+      // Smooth envelope: quick attack, gentle decay
+      env.gain.setValueAtTime(0, t);
+      env.gain.linearRampToValueAtTime(gain, t + 0.03);
+      env.gain.exponentialRampToValueAtTime(0.001, t + noteDuration);
+
+      osc.connect(env);
+      env.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + noteDuration + 0.05);
+    });
+
+    // Close the context after everything finishes
+    const totalDuration = (notes.length - 1) * noteSpacing + noteDuration + 0.1;
+    setTimeout(() => ctx.close(), totalDuration * 1000);
+  } catch {
+    // Audio not available — silently skip
+  }
+}
+
 const TENSION_HUM_HZ = 200;
 const TENSION_HUM_GAIN_MIN = 0.05;
 const TENSION_HUM_GAIN_MAX = 0.3;
@@ -138,7 +178,10 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
   const [viewMode, setViewMode] = useState<ViewMode>("front");
   const appliedInstrumentViewRef = useRef(false);
   const [sensitivity, setSensitivity] = useState(50); // 0–100; 50 = recommended balance
+  const [isCalibrating, setIsCalibrating] = useState(false);
   const [isCalibrated, setIsCalibrated] = useState(false);
+  const [calibrationFrameCount, setCalibrationFrameCount] = useState(0);
+  const [calibrationSecondsLeft, setCalibrationSecondsLeft] = useState(0);
   const [baseline, setBaseline] = useState<FrontBaseline | null>(null);
   const [sideViewBaseline, setSideViewBaseline] = useState<SideBaseline | null>(null);
   const [alertType, setAlertType] = useState<PostureAlertType>(null);
@@ -170,6 +213,14 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
   const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
+  const calibrationBufferRef = useRef<{
+    world: WorldLandmark[];
+    image: Landmark[];
+  }[]>([]);
+  const isCalibratingRef = useRef(false);
+  const calibrationTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const calibrationDoneRef = useRef(false);
+  const finalizeCalibrationRef = useRef<() => boolean>(() => false);
   const baselineRef = useRef<FrontBaseline | null>(null);
   const sideViewBaselineRef = useRef<SideBaseline | null>(null);
   const isCalibratedRef = useRef(false);
@@ -182,9 +233,10 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
     baselineRef.current = baseline;
     sideViewBaselineRef.current = sideViewBaseline;
     isCalibratedRef.current = isCalibrated;
+    isCalibratingRef.current = isCalibrating;
     viewModeRef.current = viewMode;
     sensitivityRef.current = sensitivity;
-  }, [baseline, sideViewBaseline, isCalibrated, viewMode, sensitivity]);
+  }, [baseline, sideViewBaseline, isCalibrated, isCalibrating, viewMode, sensitivity]);
 
   // Create/recreate engine when instrument or viewMode changes
   useEffect(() => {
@@ -325,103 +377,177 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
     };
   }, []);
 
+  /** Start collecting calibration frames for CALIBRATION_DURATION_S seconds. */
   const handleCalibrate = useCallback(() => {
-    const world = smoothedWorldLandmarksRef.current;
-    if (world.length < 25) return;
+    // Clear any existing timer
+    if (calibrationTimerRef.current) {
+      clearInterval(calibrationTimerRef.current);
+      calibrationTimerRef.current = null;
+    }
     setCalibrationRejectedReason(null);
+    calibrationBufferRef.current = [];
+    setCalibrationFrameCount(0);
+    setCalibrationSecondsLeft(CALIBRATION_DURATION_S);
+    setIsCalibrating(true);
+    setIsCalibrated(false);
+    setBaseline(null);
+    setSideViewBaseline(null);
+    setAlertType(null);
+    leanFramesRef.current = 0;
+    tensionFramesRef.current = 0;
+
+    calibrationDoneRef.current = false;
+
+    // Countdown timer
+    const startTime = Date.now();
+    calibrationTimerRef.current = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      const remaining = Math.max(0, CALIBRATION_DURATION_S - elapsed);
+      setCalibrationSecondsLeft(remaining);
+      if (remaining <= 0) {
+        clearInterval(calibrationTimerRef.current!);
+        calibrationTimerRef.current = null;
+        calibrationDoneRef.current = true;
+      }
+    }, 500);
+  }, []);
+
+  /** Finalize baseline from collected calibration frames. Returns true on success. */
+  const finalizeCalibration = useCallback((): boolean => {
+    const buffer = calibrationBufferRef.current;
+    if (buffer.length < 10) {
+      setCalibrationRejectedReason(
+        `Not enough data — only ${buffer.length} frames collected. Play for a few seconds, then start the session.`
+      );
+      setIsCalibrating(false);
+      return false;
+    }
+
     const mode = viewModeRef.current;
     const engine = engineRef.current;
     const maxAsymmetry = engine?.thresholds.calibrationMaxAsymmetryM ?? 0.025;
+    const n = buffer.length;
+
+    // Average all world landmarks across collected frames
+    const avgWorld: WorldLandmark[] = [];
+    for (let j = 0; j < 33; j++) {
+      let sx = 0, sy = 0, sz = 0;
+      for (const frame of buffer) {
+        sx += frame.world[j].x;
+        sy += frame.world[j].y;
+        sz += frame.world[j].z;
+      }
+      avgWorld.push({ x: sx / n, y: sy / n, z: sz / n });
+    }
+
+    // Average all image landmarks across collected frames
+    const avgImg: Landmark[] = [];
+    for (let j = 0; j < 33; j++) {
+      let sx = 0, sy = 0;
+      for (const frame of buffer) {
+        sx += frame.image[j]?.x ?? 0;
+        sy += frame.image[j]?.y ?? 0;
+      }
+      avgImg.push({ x: sx / n, y: sy / n });
+    }
 
     if (mode === "front") {
       const shoulderAsymmetry = Math.abs(
-        world[SHOULDER_LEFT].y - world[SHOULDER_RIGHT].y
+        avgWorld[SHOULDER_LEFT].y - avgWorld[SHOULDER_RIGHT].y
       );
       if (shoulderAsymmetry > maxAsymmetry) {
         setCalibrationRejectedReason(
-          "Shoulders look uneven. Relax, level them, then click Calibrate again."
+          "Shoulders looked uneven during calibration. Relax, level them, then calibrate again."
         );
-        return;
+        setIsCalibrating(false);
+        return false;
       }
       const angleLeft = angleEarShoulderHipWorld(
-        world[EAR_LEFT],
-        world[SHOULDER_LEFT],
-        world[HIP_LEFT]
+        avgWorld[EAR_LEFT], avgWorld[SHOULDER_LEFT], avgWorld[HIP_LEFT]
       );
       const angleRight = angleEarShoulderHipWorld(
-        world[EAR_RIGHT],
-        world[SHOULDER_RIGHT],
-        world[HIP_RIGHT]
+        avgWorld[EAR_RIGHT], avgWorld[SHOULDER_RIGHT], avgWorld[HIP_RIGHT]
       );
       const bl: FrontBaseline = {
         angleLeft,
         angleRight,
-        earYLeft: world[EAR_LEFT].y,
-        earYRight: world[EAR_RIGHT].y,
-        shoulderYLeft: world[SHOULDER_LEFT].y,
-        shoulderYRight: world[SHOULDER_RIGHT].y,
-        earShoulderVertLeft: Math.abs(world[EAR_LEFT].y - world[SHOULDER_LEFT].y),
-        earShoulderVertRight: Math.abs(world[EAR_RIGHT].y - world[SHOULDER_RIGHT].y),
+        earYLeft: avgWorld[EAR_LEFT].y,
+        earYRight: avgWorld[EAR_RIGHT].y,
+        shoulderYLeft: avgWorld[SHOULDER_LEFT].y,
+        shoulderYRight: avgWorld[SHOULDER_RIGHT].y,
+        earShoulderVertLeft: Math.abs(avgWorld[EAR_LEFT].y - avgWorld[SHOULDER_LEFT].y),
+        earShoulderVertRight: Math.abs(avgWorld[EAR_RIGHT].y - avgWorld[SHOULDER_RIGHT].y),
       };
       setBaseline(bl);
       setSideViewBaseline(null);
     } else {
-      const distLeft = dist3(world[EAR_LEFT], world[SHOULDER_LEFT]);
-      const distRight = dist3(world[EAR_RIGHT], world[SHOULDER_RIGHT]);
+      const distLeft = dist3(avgWorld[EAR_LEFT], avgWorld[SHOULDER_LEFT]);
+      const distRight = dist3(avgWorld[EAR_RIGHT], avgWorld[SHOULDER_RIGHT]);
       const angleLeft = angleEarShoulderHipWorld(
-        world[EAR_LEFT],
-        world[SHOULDER_LEFT],
-        world[HIP_LEFT]
+        avgWorld[EAR_LEFT], avgWorld[SHOULDER_LEFT], avgWorld[HIP_LEFT]
       );
       const angleRight = angleEarShoulderHipWorld(
-        world[EAR_RIGHT],
-        world[SHOULDER_RIGHT],
-        world[HIP_RIGHT]
+        avgWorld[EAR_RIGHT], avgWorld[SHOULDER_RIGHT], avgWorld[HIP_RIGHT]
       );
-      // 2D image landmarks for primary side-view detection
-      const img = smoothedLandmarksRef.current;
       const sbl: SideBaseline = {
-        // --- 2D image landmarks (normalized 0–1) ---
-        earShoulderDxLeft: Math.abs(img[EAR_LEFT]?.x - img[SHOULDER_LEFT]?.x) || 0,
-        earShoulderDxRight: Math.abs(img[EAR_RIGHT]?.x - img[SHOULDER_RIGHT]?.x) || 0,
-        earShoulderDyLeft: (img[SHOULDER_LEFT]?.y - img[EAR_LEFT]?.y) || 0,
-        earShoulderDyRight: (img[SHOULDER_RIGHT]?.y - img[EAR_RIGHT]?.y) || 0,
-        imgShoulderYLeft: img[SHOULDER_LEFT]?.y ?? 0,
-        imgShoulderYRight: img[SHOULDER_RIGHT]?.y ?? 0,
-        imgEarYLeft: img[EAR_LEFT]?.y ?? 0,
-        imgEarYRight: img[EAR_RIGHT]?.y ?? 0,
-        // --- World coordinates (secondary / Piano filter) ---
+        earShoulderDxLeft: Math.abs(avgImg[EAR_LEFT].x - avgImg[SHOULDER_LEFT].x),
+        earShoulderDxRight: Math.abs(avgImg[EAR_RIGHT].x - avgImg[SHOULDER_RIGHT].x),
+        earShoulderDyLeft: avgImg[SHOULDER_LEFT].y - avgImg[EAR_LEFT].y,
+        earShoulderDyRight: avgImg[SHOULDER_RIGHT].y - avgImg[EAR_RIGHT].y,
+        imgShoulderYLeft: avgImg[SHOULDER_LEFT].y,
+        imgShoulderYRight: avgImg[SHOULDER_RIGHT].y,
+        imgEarYLeft: avgImg[EAR_LEFT].y,
+        imgEarYRight: avgImg[EAR_RIGHT].y,
         distLeft,
         distRight,
         angleLeft,
         angleRight,
-        shoulderYLeft: world[SHOULDER_LEFT].y,
-        shoulderYRight: world[SHOULDER_RIGHT].y,
-        earYLeft: world[EAR_LEFT].y,
-        earYRight: world[EAR_RIGHT].y,
-        earShoulderVertLeft: Math.abs(world[EAR_LEFT].y - world[SHOULDER_LEFT].y),
-        earShoulderVertRight: Math.abs(world[EAR_RIGHT].y - world[SHOULDER_RIGHT].y),
+        shoulderYLeft: avgWorld[SHOULDER_LEFT].y,
+        shoulderYRight: avgWorld[SHOULDER_RIGHT].y,
+        earYLeft: avgWorld[EAR_LEFT].y,
+        earYRight: avgWorld[EAR_RIGHT].y,
+        earShoulderVertLeft: Math.abs(avgWorld[EAR_LEFT].y - avgWorld[SHOULDER_LEFT].y),
+        earShoulderVertRight: Math.abs(avgWorld[EAR_RIGHT].y - avgWorld[SHOULDER_RIGHT].y),
       };
-      // For Piano side view: also compute wrist-shoulder distance
       if (instrumentProp === "piano") {
-        sbl.wristShoulderDistLeft = dist3(world[WRIST_LEFT], world[SHOULDER_LEFT]);
-        sbl.wristShoulderDistRight = dist3(world[WRIST_RIGHT], world[SHOULDER_RIGHT]);
+        sbl.wristShoulderDistLeft = dist3(avgWorld[WRIST_LEFT], avgWorld[SHOULDER_LEFT]);
+        sbl.wristShoulderDistRight = dist3(avgWorld[WRIST_RIGHT], avgWorld[SHOULDER_RIGHT]);
       }
       setSideViewBaseline(sbl);
       setBaseline(null);
     }
+
+    setIsCalibrating(false);
     setIsCalibrated(true);
     setAlertType(null);
-    leanFramesRef.current = 0;
-    tensionFramesRef.current = 0;
     setIsDetectionPaused(false);
+    calibrationBufferRef.current = [];
+    playCalibrationChime();
+    return true;
   }, [instrumentProp]);
+
+  // Keep ref in sync so tick loop can call it without stale closures
+  finalizeCalibrationRef.current = finalizeCalibration;
+
+  // Clean up calibration timer on unmount
+  useEffect(() => {
+    return () => {
+      if (calibrationTimerRef.current) {
+        clearInterval(calibrationTimerRef.current);
+      }
+    };
+  }, []);
 
   const handleToggleViewMode = useCallback(() => {
     setViewMode((prev) => (prev === "front" ? "side" : "front"));
     setBaseline(null);
     setSideViewBaseline(null);
     setIsCalibrated(false);
+    setIsCalibrating(false);
+    if (calibrationTimerRef.current) {
+      clearInterval(calibrationTimerRef.current);
+      calibrationTimerRef.current = null;
+    }
     setAlertType(null);
     setCalibrationRejectedReason(null);
     leanFramesRef.current = 0;
@@ -567,7 +693,7 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
             const smoothed = raw.map((lm, i) =>
               lowPass(
                 smoothedLandmarksRef.current[i],
-                { x: lm.x, y: lm.y, z: lm.z, visibility: undefined },
+                { x: lm.x, y: lm.y, z: lm.z, visibility: lm.visibility },
                 SMOOTHING_ALPHA
               )
             );
@@ -582,6 +708,21 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
               )
             );
             smoothedWorldLandmarksRef.current = worldSmoothed;
+
+            // Collect calibration frames while calibrating
+            if (isCalibratingRef.current && worldSmoothed.length >= 25) {
+              calibrationBufferRef.current.push({
+                world: worldSmoothed.map(lm => ({ ...lm })),
+                image: smoothed.map(lm => ({ ...lm })),
+              });
+              setCalibrationFrameCount(calibrationBufferRef.current.length);
+
+              // Auto-finalize when timer signals done
+              if (calibrationDoneRef.current) {
+                calibrationDoneRef.current = false;
+                finalizeCalibrationRef.current();
+              }
+            }
 
             const mode = viewModeRef.current;
             const base = baselineRef.current;
@@ -843,6 +984,11 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
         <div className="absolute bottom-2 left-2 right-2 text-center text-xs text-white/80 bg-black/50 rounded px-2 py-1">
           Educational Tool Only — Not a medical device.
         </div>
+        {isCalibrating && (
+          <div className="absolute top-2 left-2 right-2 text-center text-sm text-amber-100 bg-amber-600/80 rounded-lg px-3 py-2 animate-pulse">
+            Calibrating — play relaxed for {calibrationSecondsLeft}s
+          </div>
+        )}
         {isPlayback && (
           <div className="absolute top-2 left-2 right-2 text-center text-xs text-amber-200/90 bg-black/50 rounded px-2 py-1">
             {replaySessionInfo
@@ -945,14 +1091,14 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
         {!isPlayback && (
           <>
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className={`inline-flex rounded-lg bg-zinc-800 border border-zinc-700 p-0.5 ${isRecording ? "opacity-50 pointer-events-none" : ""}`} role="radiogroup" aria-label="Camera view">
+              <div className={`inline-flex rounded-lg bg-zinc-800 border border-zinc-700 p-0.5 ${isRecording || isCalibrating ? "opacity-50 pointer-events-none" : ""}`} role="radiogroup" aria-label="Camera view">
                 {(["front", "side"] as const).map((mode) => (
                   <button
                     key={mode}
                     type="button"
                     role="radio"
                     aria-checked={viewMode === mode}
-                    disabled={isRecording}
+                    disabled={isRecording || isCalibrating}
                     onClick={() => {
                       if (viewMode !== mode) handleToggleViewMode();
                     }}
@@ -970,11 +1116,31 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
               <button
                 type="button"
                 onClick={handleCalibrate}
-                disabled={!isPoseReady || landmarks.length === 0 || isRecording}
-                className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50 disabled:pointer-events-none"
+                disabled={!isPoseReady || landmarks.length === 0 || isRecording || isCalibrating}
+                className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all disabled:opacity-50 disabled:pointer-events-none ${
+                  isCalibrating
+                    ? "bg-amber-600 text-white animate-pulse"
+                    : isCalibrated
+                      ? "bg-emerald-800 text-emerald-200 border border-emerald-600 hover:bg-emerald-700"
+                      : "bg-emerald-600 text-white hover:bg-emerald-500"
+                }`}
               >
-                <Activity size={18} />
-                Calibrate
+                {isCalibrating ? (
+                  <>
+                    <Activity size={18} className="animate-spin" />
+                    Calibrating... {calibrationSecondsLeft}s
+                  </>
+                ) : isCalibrated ? (
+                  <>
+                    <CheckCircle size={18} />
+                    Calibrated
+                  </>
+                ) : (
+                  <>
+                    <Activity size={18} />
+                    Calibrate
+                  </>
+                )}
               </button>
             </div>
             <p className="text-xs text-zinc-500">
@@ -1005,7 +1171,7 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
                 Body guide
               </button>
             </div>
-            {/* Calibration hint */}
+            {/* Calibration hint / progress */}
             {!isCalibrated && !replaySessionInfo && (
               <div className="space-y-2">
                 {calibrationRejectedReason && (
@@ -1014,19 +1180,41 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
                     {calibrationRejectedReason}
                   </div>
                 )}
-                <div className="rounded-lg bg-zinc-800/60 border border-zinc-700 p-3 text-sm text-zinc-400 space-y-2">
-                  <p>
-                    Sit <strong className="text-zinc-200">relaxed and ergonomic</strong>, then perform your instrument. While playing <strong className="text-zinc-200">as relaxed as you can</strong>, click <strong className="text-zinc-200">Calibrate</strong> to set your baseline.
-                  </p>
-                  <p className="text-zinc-500 text-xs">
-                    Calibrating while playing relaxed gives a healthy target; the app will alert you when you tense or deviate from this position.
-                  </p>
-                </div>
+                {isCalibrating ? (
+                  <div className="rounded-lg bg-amber-900/30 border border-amber-700/50 p-3 text-sm text-amber-100 space-y-2">
+                    <p>
+                      <strong>Calibrating...</strong> Play your instrument in a <strong className="text-amber-50">relaxed, ergonomic posture</strong>. The app is learning your natural playing position.
+                    </p>
+                    <div className="flex items-center gap-3">
+                      <div className="flex-1 h-2 rounded-full bg-amber-950 overflow-hidden">
+                        <div
+                          className="h-full bg-amber-500 rounded-full transition-all duration-500"
+                          style={{ width: `${((CALIBRATION_DURATION_S - calibrationSecondsLeft) / CALIBRATION_DURATION_S) * 100}%` }}
+                        />
+                      </div>
+                      <span className="text-xs text-amber-300 tabular-nums w-12 text-right">
+                        {calibrationSecondsLeft}s left
+                      </span>
+                    </div>
+                    <p className="text-amber-400/70 text-xs">
+                      {calibrationFrameCount} frames collected
+                    </p>
+                  </div>
+                ) : (
+                  <div className="rounded-lg bg-zinc-800/60 border border-zinc-700 p-3 text-sm text-zinc-400 space-y-2">
+                    <p>
+                      Click <strong className="text-zinc-200">Calibrate</strong>, then play your instrument <strong className="text-zinc-200">as relaxed as you can</strong> for {CALIBRATION_DURATION_S} seconds. The app will learn your natural playing posture.
+                    </p>
+                    <p className="text-zinc-500 text-xs">
+                      Calibrating while playing relaxed gives a healthy target; the app will alert you when you tense or deviate from this position.
+                    </p>
+                  </div>
+                )}
               </div>
             )}
 
             {/* Sensitivity slider */}
-            <div className={`flex flex-col gap-1 ${isRecording ? "opacity-60 pointer-events-none" : ""}`}>
+            <div className={`flex flex-col gap-1 ${isRecording || isCalibrating ? "opacity-60 pointer-events-none" : ""}`}>
               <label htmlFor="sensitivity" className="text-sm text-zinc-400 flex justify-between">
                 <span>Sensitivity</span>
                 <span>
@@ -1048,7 +1236,7 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
                 <span>Very Strict (5%)</span>
                 <span>Very Loose (25%)</span>
               </div>
-              <p className="text-xs text-zinc-500">50% recommended for balance between movement range and catching tension.</p>
+              <p className="text-xs text-zinc-500">50% recommended for balance between movement range and catching tension. Adjusts in real time — no need to recalibrate.</p>
             </div>
           </>
         )}

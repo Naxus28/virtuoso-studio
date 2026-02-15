@@ -123,18 +123,28 @@ type SetStoredResult = { ok: true } | { ok: false; error: string };
 function setStored(sessions: StoredSession[]): SetStoredResult {
   if (typeof window === "undefined") return { ok: false, error: "Storage not available." };
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
+    const json = JSON.stringify(sessions);
+    const sizeMB = (json.length * 2) / (1024 * 1024); // rough UTF-16 estimate
+    window.localStorage.setItem(STORAGE_KEY, json);
     return { ok: true };
   } catch (e) {
     const err = e instanceof Error ? e : new Error(String(e));
     const isQuota =
       err.name === "QuotaExceededError" ||
       (typeof DOMException !== "undefined" && err instanceof DOMException && err.code === 22);
+    if (isQuota) {
+      // Try to estimate the size of the latest session
+      const latestSize = sessions.length > 0
+        ? ((JSON.stringify(sessions[0]).length * 2) / (1024 * 1024)).toFixed(1)
+        : "?";
+      return {
+        ok: false,
+        error: `Storage full — this session is ~${latestSize} MB. Delete old sessions in Library to free space, or shorten recordings.`,
+      };
+    }
     return {
       ok: false,
-      error: isQuota
-        ? "Storage full. Delete old sessions in Library to free space."
-        : "Storage disabled or unavailable. Check browser settings or try a different browser.",
+      error: `Storage error: ${err.message}. Check browser settings or try a different browser.`,
     };
   }
 }
@@ -197,10 +207,10 @@ export function saveSession(payload: {
   const sessions = getStored();
   sessions.unshift(session);
   const written = setStored(sessions);
-  if (!written) {
+  if (!written.ok) {
     return {
       ok: false,
-      error: "Could not save (storage full or disabled). Try freeing space or allow storage.",
+      error: written.error,
     };
   }
   return { ok: true, session };

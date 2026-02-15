@@ -178,10 +178,16 @@ export class SideViewStrategy implements ViewStrategy {
    *   neck-curve:    (shoulder.y − ear.y) shrank (ear dropped toward shoulder)
    *   shrug:         shoulder.y decreased (rose in image) + ear.y stable
    *
+   * HEAD ROTATION suppression: when the head turns (e.g. pianist looking at
+   * bass notes), the occluded ear's visibility drops significantly. If either
+   * ear's visibility falls below 0.5, suppress head-forward since the dx
+   * change is from rotation, not forward lean.
+   *
    * CLASSIFICATION:
    *   tensionRaw: head-forward, neck-curve, or shrug
    *   leanRaw:    whole-body lean (angle dropped, 2D relationships stable)
-   *               — Piano suppresses this
+   *               — Piano suppresses this via applyFilters
+   *               — Piano also relaxes neck-curve (looking at keys is normal)
    */
   validate(
     landmarks: WorldLandmark[],
@@ -222,7 +228,15 @@ export class SideViewStrategy implements ViewStrategy {
     const dxGrowL = baseDxL > 1e-4 ? (dxL - baseDxL) / baseDxL : 0;
     const dxGrowR = baseDxR > 1e-4 ? (dxR - baseDxR) / baseDxR : 0;
     const dxGrow = Math.max(dxGrowL, dxGrowR);
-    const headForward = dxGrow > deviationThreshold;
+
+    // Suppress head-forward when head is rotated: if either ear's visibility
+    // dropped below 0.5, the head is turned and the dx change is from
+    // rotation, not a forward lean.
+    const earVisL = earL.visibility ?? 1;
+    const earVisR = earR.visibility ?? 1;
+    const headRotated = earVisL < 0.5 || earVisR < 0.5;
+
+    const headForward = dxGrow > deviationThreshold && !headRotated;
 
     // -----------------------------------------------------------------------
     // Neck curve / head tilt down: vertical ear-shoulder gap shrank
@@ -271,7 +285,11 @@ export class SideViewStrategy implements ViewStrategy {
     // -----------------------------------------------------------------------
     // Classification
     // -----------------------------------------------------------------------
-    const tensionRaw = headForward || neckCurve || isShrug;
+    // When shoulders rise (shrug), the vertical gap also shrinks, which would
+    // falsely trigger neckCurve. Suppress neckCurve when a shrug is detected.
+    const neckCurveFiltered = neckCurve && !isShrug;
+
+    const tensionRaw = headForward || neckCurveFiltered || isShrug;
 
     // Lean: angle dropped but no 2D tension signals → whole-body lean
     const leanRaw = angleDropped && !tensionRaw;
@@ -279,16 +297,17 @@ export class SideViewStrategy implements ViewStrategy {
     // Quality: blend of angle ratio and 2D deviations
     const angleQuality = baselineAngle > 0 ? Math.min(1, currentAngle / baselineAngle) : 1;
     const dxPenalty = headForward ? Math.max(0, 1 - dxGrow) : 1;
-    const dyPenalty = neckCurve ? Math.max(0, 1 - dyShrink) : 1;
+    const dyPenalty = neckCurveFiltered ? Math.max(0, 1 - dyShrink) : 1;
     const quality = Math.min(angleQuality, dxPenalty, dyPenalty);
 
+    // Shrug first: shoulder-rise can cause incidental gap changes
     let feedback = "Good posture";
-    if (headForward) {
-      feedback = "Head forward — bring your head back over your shoulders.";
-    } else if (neckCurve) {
-      feedback = "Neck curving down — lift your head, lengthen through the crown.";
-    } else if (isShrug) {
+    if (isShrug) {
       feedback = "Shoulder tension — relax your shoulders, let them drop.";
+    } else if (headForward) {
+      feedback = "Head forward — bring your head back over your shoulders.";
+    } else if (neckCurveFiltered) {
+      feedback = "Neck curving down — lift your head, lengthen through the crown.";
     } else if (leanRaw) {
       feedback = "Leaning forward — sit tall, stack ear over shoulder over hip.";
     }
