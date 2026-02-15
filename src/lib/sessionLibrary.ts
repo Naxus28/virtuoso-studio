@@ -12,6 +12,17 @@ import type { InstrumentId, ViewId } from "./posture-engines/EngineFactory";
 import type { Sensitivity } from "./posture-engines/Instruments";
 import type { HandFrame } from "./dexterity/types";
 
+/** Display labels for instruments (dashboard tags, library section headers). */
+export const INSTRUMENT_LABELS: Record<InstrumentId, string> = {
+  piano: "Piano",
+  guitar: "Guitar",
+  generic: "General",
+};
+
+export function getInstrumentLabel(instrument: InstrumentId): string {
+  return INSTRUMENT_LABELS[instrument] ?? "General";
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------

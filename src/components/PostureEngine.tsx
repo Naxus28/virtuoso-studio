@@ -233,9 +233,11 @@ function formatPlaybackTime(ms: number): string {
 type PostureEngineProps = {
   /** When set, load this session from the library and start replay. */
   replayId?: string | null;
+  /** Instrument chosen on dashboard; used when saving so sessions are tagged correctly. */
+  instrument?: import("@/lib/posture-engines/EngineFactory").InstrumentId;
 };
 
-export function PostureEngine({ replayId }: PostureEngineProps = {}) {
+export function PostureEngine({ replayId, instrument: instrumentProp = "generic" }: PostureEngineProps = {}) {
   const webcamRef = useRef<Webcam>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const poseRef = useRef<import("@mediapipe/tasks-vision").PoseLandmarker | null>(null);
@@ -527,6 +529,7 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
       viewMode: viewModeRef.current,
       recording: sessionRecording,
       sensitivityPercent: pct,
+      instrument: instrumentProp,
     });
     setSessionRecording(null);
     setIsStopped(false);
@@ -534,7 +537,7 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
     setIsPlayback(false);
     setIsDetectionPaused(true);
     setAlertType(null);
-  }, [sessionRecording, sessionName]);
+  }, [sessionRecording, sessionName, instrumentProp]);
 
   const handleReviewSession = useCallback(() => {
     if (!sessionRecording || sessionRecording.frames.length === 0) return;

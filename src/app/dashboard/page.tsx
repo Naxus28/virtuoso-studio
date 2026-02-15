@@ -6,7 +6,7 @@ import Link from "next/link";
 import { Piano, Guitar, LogOut, Play, Trash2 } from "lucide-react";
 import { getUser, updateUser, logout } from "@/lib/auth";
 import type { FakeUser } from "@/lib/auth";
-import { getStoredSessions, deleteSession } from "@/lib/sessionLibrary";
+import { getStoredSessions, deleteSession, getInstrumentLabel } from "@/lib/sessionLibrary";
 import type { StoredSession } from "@/lib/sessionLibrary";
 import type { InstrumentId } from "@/lib/posture-engines/EngineFactory";
 import { ConfirmDeleteModal } from "@/components/ConfirmDeleteModal";
@@ -171,9 +171,17 @@ export default function DashboardPage() {
                   className="rounded-xl bg-zinc-900/80 border border-zinc-700 p-4 flex flex-wrap items-center justify-between gap-3"
                 >
                   <div className="min-w-0">
-                    <p className="font-medium text-zinc-100 truncate">
-                      {session.name}
-                    </p>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="font-medium text-zinc-100 truncate">
+                        {session.name}
+                      </p>
+                      <span
+                        className="rounded-md bg-zinc-700 text-zinc-300 text-xs font-medium px-2 py-0.5 shrink-0"
+                        title="Instrument"
+                      >
+                        {getInstrumentLabel(session.instrument ?? "generic")}
+                      </span>
+                    </div>
                     <p className="text-zinc-500 text-sm mt-0.5">
                       {(session.view ?? session.viewMode) === "side" ? "Side View" : "Front View"} &middot;{" "}
                       {formatDuration(session.recording)} &middot;{" "}
