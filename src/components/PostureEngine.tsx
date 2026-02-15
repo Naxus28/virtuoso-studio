@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Webcam from "react-webcam";
 import { motion, AnimatePresence } from "framer-motion";
@@ -8,6 +9,7 @@ import {
   AlertTriangle,
   Square,
   Play,
+  Pause,
   BarChart3,
   RotateCcw,
   Trash2,
@@ -19,6 +21,11 @@ import type { SessionRecording } from "@/lib/SessionRecorder";
 import { saveSession, getSessionById, getStoredSessions } from "@/lib/sessionLibrary";
 import { SessionStats } from "@/components/SessionStats";
 import { drawSkeleton } from "./PostureEngine.draw";
+
+const PostureReview3D = dynamic(
+  () => import("@/components/PostureReview3D").then((m) => m.PostureReview3D),
+  { ssr: false }
+);
 
 // MediaPipe Pose landmark indices
 const EAR_LEFT = 7;
@@ -216,6 +223,13 @@ function evaluatePostureSide(
   return { leanRaw, tensionRaw: false, isShrug: false, quality };
 }
 
+function formatPlaybackTime(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return m > 0 ? `${m}:${String(sec).padStart(2, "0")}` : `0:${String(sec).padStart(2, "0")}`;
+}
+
 type PostureEngineProps = {
   /** When set, load this session from the library and start replay. */
   replayId?: string | null;
@@ -237,6 +251,9 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
   const audioContextRef = useRef<AudioContext | null>(null);
   const gainNodeRef = useRef<GainNode | null>(null);
   const playbackStartTimeRef = useRef<number>(0);
+  const playbackTimeRef = useRef<number>(0);
+  const lastTickTimeRef = useRef<number>(0);
+  const lastFrameIndexRef = useRef<number>(-1);
 
   const [viewMode, setViewMode] = useState<ViewMode>("front");
   const [sensitivity, setSensitivity] = useState(35); // 0–100; 35 ≈ 12% shrink (default)
@@ -252,6 +269,11 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
   const [isPlayback, setIsPlayback] = useState(false);
   const [playbackLandmarks, setPlaybackLandmarks] = useState<Landmark[]>([]);
   const [playbackSlouch, setPlaybackSlouch] = useState(false);
+  const [playbackQuality, setPlaybackQuality] = useState(1);
+  const [playbackAlertType, setPlaybackAlertType] = useState<"lean" | "tension" | null>(null);
+  const [playbackPaused, setPlaybackPaused] = useState(false);
+  const [playbackPositionMs, setPlaybackPositionMs] = useState(0);
+  const [reviewViewMode, setReviewViewMode] = useState<"humanoid" | "skeleton">("skeleton");
   const [isStopped, setIsStopped] = useState(false);
   const [sessionName, setSessionName] = useState("");
   /** When true, detection loop stops (after stop / save / discard until start again). */
@@ -294,6 +316,11 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
         sensitivityPercent: session.sensitivityPercent,
       });
       playbackStartTimeRef.current = performance.now();
+      playbackTimeRef.current = 0;
+      lastTickTimeRef.current = 0;
+      lastFrameIndexRef.current = -1;
+      setPlaybackPositionMs(0);
+      setPlaybackPaused(false);
     }
   }, [replayId]);
 
@@ -513,6 +540,11 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
     if (!sessionRecording || sessionRecording.frames.length === 0) return;
     setIsPlayback(true);
     playbackStartTimeRef.current = performance.now();
+    playbackTimeRef.current = 0;
+    lastTickTimeRef.current = 0;
+    lastFrameIndexRef.current = -1;
+    setPlaybackPositionMs(0);
+    setPlaybackPaused(false);
   }, [sessionRecording]);
 
   const handleBackToLive = useCallback(() => {
@@ -584,6 +616,8 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
             let quality = 1;
             /** Stored in recording: drops below threshold when we show an alert so chart/summary match alerts. */
             let recordedQuality = 1;
+            /** Alert type for this frame: used for replay tension/lean coloring. */
+            let frameAlertType: "lean" | "tension" | null = null;
             if (isCalibratedRef.current && mode === "front" && base != null) {
               const { leanRaw, tensionRaw, isShrug, quality: q } = evaluatePostureFront(
                 worldSmoothed,
@@ -608,6 +642,7 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
 
               const leanPersisted = leanFramesRef.current >= PERSISTENCE_FRAMES;
               const tensionPersisted = tensionFramesRef.current >= PERSISTENCE_FRAMES;
+              frameAlertType = leanPersisted ? "lean" : tensionPersisted ? "tension" : null;
               setAlertType((prev) => {
                 if (leanPersisted) return "lean";
                 if (tensionPersisted) return "tension";
@@ -650,6 +685,7 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
                 tensionFramesRef.current = 0;
               }
               const leanPersisted = leanFramesRef.current >= PERSISTENCE_FRAMES;
+              frameAlertType = leanPersisted ? "lean" : null;
               setAlertType(leanPersisted ? "lean" : null);
               recordedQuality =
                 leanPersisted
@@ -667,7 +703,8 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
               sessionRecorderRef.current.addFrame(
                 Date.now(),
                 smoothed,
-                recordedQuality
+                recordedQuality,
+                frameAlertType
               );
             }
           }
@@ -681,26 +718,44 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
     return () => cancelAnimationFrame(animationRef.current);
   }, [isPoseReady, isPlayback, isDetectionPaused]);
 
-  // Playback loop: advance frame index and set playbackLandmarks/playbackSlouch
+  const playbackFps = 30;
+  const playbackFrameMs = 1000 / playbackFps;
+
+  // Playback loop: advance position when not paused; update frame and position state
   useEffect(() => {
     if (!isPlayback || !sessionRecording || sessionRecording.frames.length === 0) return;
     const frames = sessionRecording.frames;
-    const fps = 30;
-    const frameMs = 1000 / fps;
+    const durationMs = frames.length * playbackFrameMs;
 
-    function tick() {
-      const elapsed = performance.now() - playbackStartTimeRef.current;
-      const frameIndex = Math.floor(elapsed / frameMs) % frames.length;
+    function tick(now: number) {
+      if (!playbackPaused) {
+        const prev = lastTickTimeRef.current;
+        if (prev > 0) playbackTimeRef.current += now - prev;
+        playbackTimeRef.current = playbackTimeRef.current % durationMs;
+        if (playbackTimeRef.current < 0) playbackTimeRef.current += durationMs;
+      }
+      lastTickTimeRef.current = now;
+      const frameIndex = Math.min(
+        Math.floor(playbackTimeRef.current / playbackFrameMs),
+        frames.length - 1
+      );
+      if (frameIndex !== lastFrameIndexRef.current) {
+        lastFrameIndexRef.current = frameIndex;
+        setPlaybackPositionMs(frameIndex * playbackFrameMs);
+      }
       const frame = frames[frameIndex];
       if (frame) {
         setPlaybackLandmarks(frame.landmarks);
         setPlaybackSlouch(frame.quality < QUALITY_ALERT_THRESHOLD);
+        setPlaybackQuality(frame.quality);
+        setPlaybackAlertType(frame.alertType ?? null);
       }
       playbackRef.current = requestAnimationFrame(tick);
     }
+    lastTickTimeRef.current = performance.now();
     playbackRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(playbackRef.current);
-  }, [isPlayback, sessionRecording]);
+  }, [isPlayback, sessionRecording, playbackPaused]);
 
   // Draw skeleton: live or playback
   useEffect(() => {
@@ -718,7 +773,7 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
         canvas.height = h;
       }
       ctx.clearRect(0, 0, w, h);
-      if (playbackLandmarks.length > 0) {
+      if (reviewViewMode === "skeleton" && playbackLandmarks.length > 0) {
         drawSkeleton(ctx, playbackLandmarks, playbackSlouch, w, h);
       }
       return;
@@ -734,7 +789,7 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
     }
     ctx.clearRect(0, 0, w, h);
     drawSkeleton(ctx, landmarks, alertType != null, w, h);
-  }, [landmarks, alertType, isPlayback, sessionRecording, playbackLandmarks, playbackSlouch]);
+  }, [landmarks, alertType, isPlayback, sessionRecording, playbackLandmarks, playbackSlouch, reviewViewMode]);
 
   const videoConstraints: MediaTrackConstraints = {
     width: { ideal: 640 },
@@ -771,14 +826,30 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
           </>
         ) : (
           <div
-            className="w-full aspect-video bg-zinc-900 flex items-center justify-center"
+            className="w-full aspect-video bg-zinc-900 flex items-center justify-center relative"
             style={{ aspectRatio: `${sessionRecording?.width ?? 640} / ${sessionRecording?.height ?? 480}` }}
           >
             <canvas
               ref={canvasRef}
               className="w-full h-full object-contain"
-              style={{ transform: "scaleX(-1)" }}
+              style={{
+                transform: "scaleX(-1)",
+                opacity: reviewViewMode === "skeleton" ? 1 : 0.4,
+              }}
             />
+            {reviewViewMode === "humanoid" &&
+              sessionRecording &&
+              sessionRecording.frames.length > 0 &&
+              playbackLandmarks.length > 0 && (
+                <PostureReview3D
+                  landmarks={playbackLandmarks}
+                  quality={playbackQuality}
+                  qualityAlertThreshold={QUALITY_ALERT_THRESHOLD}
+                  alertType={playbackAlertType}
+                  width={sessionRecording.width}
+                  height={sessionRecording.height}
+                />
+              )}
           </div>
         )}
 
@@ -821,6 +892,68 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
           )}
         </AnimatePresence>
       </div>
+
+      {/* Review controls: view toggle (Skeleton / Humanoid), play/pause, seek */}
+      {isPlayback && sessionRecording && sessionRecording.frames.length > 0 && (
+        <div className="w-full max-w-[640px] flex flex-col gap-3 rounded-xl bg-zinc-800/80 border border-zinc-700 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div
+              className="inline-flex rounded-lg bg-zinc-900 border border-zinc-600 p-0.5"
+              role="radiogroup"
+              aria-label="Review view"
+            >
+              {(["skeleton", "humanoid"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  role="radio"
+                  aria-checked={reviewViewMode === mode}
+                  onClick={() => setReviewViewMode(mode)}
+                  className={`rounded-md px-3 py-1.5 text-sm font-medium transition-all ${
+                    reviewViewMode === mode
+                      ? "bg-emerald-600 text-white"
+                      : "text-zinc-400 hover:text-zinc-100"
+                  }`}
+                >
+                  {mode === "skeleton" ? "Skeleton" : "Humanoid"}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => setPlaybackPaused((p) => !p)}
+              className="inline-flex items-center gap-2 rounded-lg bg-zinc-700 hover:bg-zinc-600 px-3 py-2 text-sm font-medium text-zinc-100"
+              aria-label={playbackPaused ? "Play" : "Pause"}
+            >
+              {playbackPaused ? <Play size={18} /> : <Pause size={18} />}
+            </button>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-zinc-400 tabular-nums w-10">
+              {formatPlaybackTime(playbackPositionMs)}
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={Math.max(0, sessionRecording.frames.length * playbackFrameMs - 1)}
+              step={playbackFrameMs}
+              value={playbackPositionMs}
+              onChange={(e) => {
+                const ms = Number(e.target.value);
+                setPlaybackPositionMs(ms);
+                playbackTimeRef.current = ms;
+                lastTickTimeRef.current = performance.now();
+                lastFrameIndexRef.current = Math.floor(ms / playbackFrameMs);
+              }}
+              className="flex-1 h-2 rounded-full bg-zinc-600 appearance-none cursor-pointer accent-emerald-500"
+              aria-label="Seek to position"
+            />
+            <span className="text-xs text-zinc-400 tabular-nums w-10">
+              {formatPlaybackTime(sessionRecording.frames.length * playbackFrameMs)}
+            </span>
+          </div>
+        </div>
+      )}
 
       <div className="w-full max-w-[640px] space-y-4">
         {/* View mode toggle + calibrate — hidden during replay */}
