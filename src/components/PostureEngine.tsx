@@ -412,6 +412,18 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
     }, 500);
   }, []);
 
+  const handleCancelCalibration = useCallback(() => {
+    if (calibrationTimerRef.current) {
+      clearInterval(calibrationTimerRef.current);
+      calibrationTimerRef.current = null;
+    }
+    calibrationDoneRef.current = false;
+    calibrationBufferRef.current = [];
+    setIsCalibrating(false);
+    setCalibrationFrameCount(0);
+    setCalibrationSecondsLeft(0);
+  }, []);
+
   /** Finalize baseline from collected calibration frames. Returns true on success. */
   const finalizeCalibration = useCallback((): boolean => {
     const buffer = calibrationBufferRef.current;
@@ -1115,11 +1127,11 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
               </div>
               <button
                 type="button"
-                onClick={handleCalibrate}
-                disabled={!isPoseReady || landmarks.length === 0 || isRecording || isCalibrating}
+                onClick={isCalibrating ? handleCancelCalibration : handleCalibrate}
+                disabled={!isPoseReady || landmarks.length === 0 || isRecording}
                 className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all disabled:opacity-50 disabled:pointer-events-none ${
                   isCalibrating
-                    ? "bg-amber-600 text-white animate-pulse"
+                    ? "bg-red-600 text-white hover:bg-red-500"
                     : isCalibrated
                       ? "bg-emerald-800 text-emerald-200 border border-emerald-600 hover:bg-emerald-700"
                       : "bg-emerald-600 text-white hover:bg-emerald-500"
@@ -1127,13 +1139,13 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
               >
                 {isCalibrating ? (
                   <>
-                    <Activity size={18} className="animate-spin" />
-                    Calibrating... {calibrationSecondsLeft}s
+                    <Square size={14} />
+                    Cancel Calibration
                   </>
                 ) : isCalibrated ? (
                   <>
                     <CheckCircle size={18} />
-                    Calibrated
+                    Re-calibrate
                   </>
                 ) : (
                   <>
