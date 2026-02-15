@@ -177,6 +177,7 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
   const sensitivityRef = useRef(50);
   const leanFramesRef = useRef(0);
   const tensionFramesRef = useRef(0);
+  const engineFeedbackRef = useRef("Good posture");
   useEffect(() => {
     baselineRef.current = baseline;
     sideViewBaselineRef.current = sideViewBaseline;
@@ -377,7 +378,19 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
         world[SHOULDER_RIGHT],
         world[HIP_RIGHT]
       );
+      // 2D image landmarks for primary side-view detection
+      const img = smoothedLandmarksRef.current;
       const sbl: SideBaseline = {
+        // --- 2D image landmarks (normalized 0–1) ---
+        earShoulderDxLeft: Math.abs(img[EAR_LEFT]?.x - img[SHOULDER_LEFT]?.x) || 0,
+        earShoulderDxRight: Math.abs(img[EAR_RIGHT]?.x - img[SHOULDER_RIGHT]?.x) || 0,
+        earShoulderDyLeft: (img[SHOULDER_LEFT]?.y - img[EAR_LEFT]?.y) || 0,
+        earShoulderDyRight: (img[SHOULDER_RIGHT]?.y - img[EAR_RIGHT]?.y) || 0,
+        imgShoulderYLeft: img[SHOULDER_LEFT]?.y ?? 0,
+        imgShoulderYRight: img[SHOULDER_RIGHT]?.y ?? 0,
+        imgEarYLeft: img[EAR_LEFT]?.y ?? 0,
+        imgEarYRight: img[EAR_RIGHT]?.y ?? 0,
+        // --- World coordinates (secondary / Piano filter) ---
         distLeft,
         distRight,
         angleLeft,
@@ -584,11 +597,13 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
                 const engineResult = engine.validate({
                   landmarks: worldSmoothed,
                   baseline: currentBaseline,
+                  imageLandmarks: smoothedLandmarksRef.current,
                   sensitivity: sensitivityRef.current,
                 });
-                const { leanRaw, tensionRaw, isShrug, quality: q } = engineResult;
+                const { leanRaw, tensionRaw, isShrug, quality: q, feedback } = engineResult;
                 quality = q;
                 qualityRef.current = quality;
+                engineFeedbackRef.current = feedback;
 
                 // Persistence filtering
                 const leanCounts = leanRaw && !isShrug;
@@ -850,14 +865,12 @@ export function PostureEngine({ replayId, instrument: instrumentProp = "generic"
                     ? "Tension detected"
                     : showLiveView && alertType === "lean"
                       ? "Lean detected"
-                      : "Tension alert"}
+                      : "Posture alert"}
                 </span>
                 <span className="text-red-100 text-xs">
-                  {showLiveView && alertType === "tension"
-                    ? "Relax your shoulders and level them — avoid raising or hiking one side."
-                    : showLiveView && alertType === "lean"
-                      ? "Sit up and align ear over shoulder over hip."
-                      : "Relax your shoulders and level them."}
+                  {showLiveView
+                    ? engineFeedbackRef.current
+                    : "Relax your shoulders and level them."}
                 </span>
               </div>
             </motion.div>

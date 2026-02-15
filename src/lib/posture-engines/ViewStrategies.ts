@@ -166,91 +166,131 @@ export class SideViewStrategy implements ViewStrategy {
   readonly name = "Side View";
   readonly perspective = "side" as const;
 
+  /**
+   * Side view detection — uses **2D image landmarks** as primary signals.
+   *
+   * MediaPipe's 3D world landmarks are unreliable in side view (the occluded
+   * side is guessed). 2D image landmarks come directly from what the model
+   * sees and are much more robust.
+   *
+   * SIGNALS (all in normalized image coords 0–1):
+   *   head-forward:  |ear.x − shoulder.x| grew  (ear moved horizontally away)
+   *   neck-curve:    (shoulder.y − ear.y) shrank (ear dropped toward shoulder)
+   *   shrug:         shoulder.y decreased (rose in image) + ear.y stable
+   *
+   * CLASSIFICATION:
+   *   tensionRaw: head-forward, neck-curve, or shrug
+   *   leanRaw:    whole-body lean (angle dropped, 2D relationships stable)
+   *               — Piano suppresses this
+   */
   validate(
     landmarks: WorldLandmark[],
     baseline: Baseline,
-    _imageLandmarks?: ImageLandmark[],
+    imageLandmarks?: ImageLandmark[],
     sensitivity: number = 50,
-    thresholds: PostureThresholds = DEFAULT_THRESHOLDS,
+    _thresholds: PostureThresholds = DEFAULT_THRESHOLDS,
   ): ViewResult {
-    if (landmarks.length < 25) return { ...GOOD };
+    const img = imageLandmarks;
+    if (!img || img.length < 25 || landmarks.length < 25) return { ...GOOD };
 
     const base = baseline as SideBaseline;
-    const w = landmarks;
-    const ratioThreshold = sensitivityToRatioThreshold(sensitivity);
+
+    // Sensitivity → how much deviation before alerting.
+    // 0 = strict (2% change triggers), 100 = loose (15% change triggers)
+    const pct = Math.max(0, Math.min(100, sensitivity));
+    const deviationThreshold = 0.02 + (pct / 100) * 0.13;
+
+    // -----------------------------------------------------------------------
+    // 2D image landmarks (normalized 0–1)
+    // -----------------------------------------------------------------------
+    const earL = img[EAR_LEFT];
+    const earR = img[EAR_RIGHT];
+    const shL = img[SHOULDER_LEFT];
+    const shR = img[SHOULDER_RIGHT];
+
+    // Current 2D measurements
+    const dxL = Math.abs(earL.x - shL.x);
+    const dxR = Math.abs(earR.x - shR.x);
+    const dyL = shL.y - earL.y; // positive = ear above shoulder
+    const dyR = shR.y - earR.y;
+
+    // -----------------------------------------------------------------------
+    // Head forward: horizontal ear-shoulder gap increased
+    // -----------------------------------------------------------------------
+    const baseDxL = base.earShoulderDxLeft;
+    const baseDxR = base.earShoulderDxRight;
+    const dxGrowL = baseDxL > 1e-4 ? (dxL - baseDxL) / baseDxL : 0;
+    const dxGrowR = baseDxR > 1e-4 ? (dxR - baseDxR) / baseDxR : 0;
+    const dxGrow = Math.max(dxGrowL, dxGrowR);
+    const headForward = dxGrow > deviationThreshold;
+
+    // -----------------------------------------------------------------------
+    // Neck curve / head tilt down: vertical ear-shoulder gap shrank
+    // (ear dropped toward shoulder)
+    // -----------------------------------------------------------------------
+    const baseDyL = base.earShoulderDyLeft;
+    const baseDyR = base.earShoulderDyRight;
+    const dyShrinkL = baseDyL > 1e-4 ? (baseDyL - dyL) / baseDyL : 0;
+    const dyShrinkR = baseDyR > 1e-4 ? (baseDyR - dyR) / baseDyR : 0;
+    const dyShrink = Math.max(dyShrinkL, dyShrinkR);
+    const neckCurve = dyShrink > deviationThreshold;
+
+    // -----------------------------------------------------------------------
+    // Shrug: shoulder rose in image + ear stayed stable
+    // In image coords, y increases downward, so shoulder rising = y decreasing
+    // -----------------------------------------------------------------------
+    const shrugThreshold = 0.015; // ~1.5% of image height
+    const earStableThreshold = 0.01; // ear didn't move much
+
+    const shRoseL = base.imgShoulderYLeft - shL.y > shrugThreshold;
+    const shRoseR = base.imgShoulderYRight - shR.y > shrugThreshold;
+    const earStableL = Math.abs(earL.y - base.imgEarYLeft) < earStableThreshold;
+    const earStableR = Math.abs(earR.y - base.imgEarYRight) < earStableThreshold;
+    const isShrug = (shRoseL && earStableL) || (shRoseR && earStableR);
+
+    // -----------------------------------------------------------------------
+    // Whole-body lean: use world-coord angle as secondary signal.
+    // If the 2D relationships are stable but the angle dropped, the body
+    // tilted as a unit (not just the head).
+    // -----------------------------------------------------------------------
     const angleRatioSide = sensitivityToAngleRatioSide(sensitivity);
-
-    // --- distance-based shrink ---
-    const distLeft = dist3(w[EAR_LEFT], w[SHOULDER_LEFT]);
-    const distRight = dist3(w[EAR_RIGHT], w[SHOULDER_RIGHT]);
-    const avgDist = (distLeft + distRight) / 2;
-    const baselineDist = (base.distLeft + base.distRight) / 2;
-    const ratio = baselineDist > 1e-6 ? avgDist / baselineDist : 1;
-    const distanceShrink = ratio < ratioThreshold;
-
-    // --- angle: use visible side only (occluded side unreliable when head turned) ---
+    const w = landmarks;
     const angleLeft = angleEarShoulderHipWorld(w[EAR_LEFT], w[SHOULDER_LEFT], w[HIP_LEFT]);
     const angleRight = angleEarShoulderHipWorld(w[EAR_RIGHT], w[SHOULDER_RIGHT], w[HIP_RIGHT]);
-    const useLeftAngle = distLeft >= distRight;
-    const currentAngle = useLeftAngle ? angleLeft : angleRight;
+    const distLeft = dist3(w[EAR_LEFT], w[SHOULDER_LEFT]);
+    const distRight = dist3(w[EAR_RIGHT], w[SHOULDER_RIGHT]);
+    const useLeft = distLeft >= distRight;
+    const currentAngle = useLeft ? angleLeft : angleRight;
     const baselineAngle =
       base.angleLeft != null && base.angleRight != null
-        ? (useLeftAngle ? base.angleLeft : base.angleRight)
+        ? (useLeft ? base.angleLeft : base.angleRight)
         : 0;
     const angleDropped =
       baselineAngle > 0 && currentAngle < baselineAngle * angleRatioSide;
 
-    // --- shrug / tension from shoulder elevation ---
-    const hasShoulderBaseline =
-      base.shoulderYLeft != null &&
-      base.shoulderYRight != null &&
-      base.earYLeft != null &&
-      base.earYRight != null;
+    // -----------------------------------------------------------------------
+    // Classification
+    // -----------------------------------------------------------------------
+    const tensionRaw = headForward || neckCurve || isShrug;
 
-    let tensionRaw = false;
-    let isShrug = false;
+    // Lean: angle dropped but no 2D tension signals → whole-body lean
+    const leanRaw = angleDropped && !tensionRaw;
 
-    if (hasShoulderBaseline) {
-      const shoulderYLeft = w[SHOULDER_LEFT].y;
-      const shoulderYRight = w[SHOULDER_RIGHT].y;
-      const earYLeft = w[EAR_LEFT].y;
-      const earYRight = w[EAR_RIGHT].y;
-
-      const shoulderUpLeft = base.shoulderYLeft! - shoulderYLeft > thresholds.shrugSideM;
-      const shoulderUpRight = base.shoulderYRight! - shoulderYRight > thresholds.shrugSideM;
-      const earStableLeft = earYLeft <= base.earYLeft! + thresholds.shrugSideM;
-      const earStableRight = earYRight <= base.earYRight! + thresholds.shrugSideM;
-      isShrug = (shoulderUpLeft && earStableLeft) || (shoulderUpRight && earStableRight);
-
-      const avgShoulderY = (shoulderYLeft + shoulderYRight) / 2;
-      const baselineShoulderY = (base.shoulderYLeft! + base.shoulderYRight!) / 2;
-      const avgEarY = (earYLeft + earYRight) / 2;
-      const baselineEarY = (base.earYLeft! + base.earYRight!) / 2;
-      const shouldersHigh = baselineShoulderY - avgShoulderY > thresholds.tensionShoulderUpM;
-      const earNotDropped = avgEarY <= baselineEarY + thresholds.shrugSideM;
-      const tensionFromElevation = shouldersHigh && earNotDropped && !angleDropped;
-      const tensionFromVerticalShrink =
-        distanceShrink && !angleDropped && baselineAngle > 0;
-
-      tensionRaw =
-        baselineAngle > 0 &&
-        !angleDropped &&
-        (isShrug || tensionFromElevation || tensionFromVerticalShrink);
-    }
-
-    // lean = head forward / head tilted down
-    const leanRaw = angleDropped || (baselineAngle <= 0 && distanceShrink);
-    const quality = Math.min(
-      1,
-      ratio,
-      baselineAngle > 0 ? currentAngle / baselineAngle : 1,
-    );
+    // Quality: blend of angle ratio and 2D deviations
+    const angleQuality = baselineAngle > 0 ? Math.min(1, currentAngle / baselineAngle) : 1;
+    const dxPenalty = headForward ? Math.max(0, 1 - dxGrow) : 1;
+    const dyPenalty = neckCurve ? Math.max(0, 1 - dyShrink) : 1;
+    const quality = Math.min(angleQuality, dxPenalty, dyPenalty);
 
     let feedback = "Good posture";
-    if (leanRaw) {
-      feedback = "Lean detected — sit up and align ear over shoulder over hip.";
-    } else if (tensionRaw) {
-      feedback = "Tension detected — relax your shoulders and level them.";
+    if (headForward) {
+      feedback = "Head forward — bring your head back over your shoulders.";
+    } else if (neckCurve) {
+      feedback = "Neck curving down — lift your head, lengthen through the crown.";
+    } else if (isShrug) {
+      feedback = "Shoulder tension — relax your shoulders, let them drop.";
+    } else if (leanRaw) {
+      feedback = "Leaning forward — sit tall, stack ear over shoulder over hip.";
     }
 
     return { leanRaw, tensionRaw, isShrug, quality, feedback };

@@ -157,29 +157,42 @@ export class Piano extends Instrument {
     landmarks: WorldLandmark[],
     baseline: Baseline,
   ): ViewResult {
-    if (!result.tensionRaw || landmarks.length < 25) return result;
+    let filtered = { ...result };
 
-    const base = baseline as SideBaseline;
-    const baseLeft = base.wristShoulderDistLeft ?? 0;
-    const baseRight = base.wristShoulderDistRight ?? 0;
-    const avgBase = (baseLeft + baseRight) / 2;
-
-    if (avgBase < 1e-6) return result;
-
-    const nowLeft = dist3(landmarks[WRIST_LEFT], landmarks[SHOULDER_LEFT]);
-    const nowRight = dist3(landmarks[WRIST_RIGHT], landmarks[SHOULDER_RIGHT]);
-    const avgNow = (nowLeft + nowRight) / 2;
-
-    // Wrists extended beyond baseline → pianist reaching for keys, not shrugging.
-    if (avgNow > avgBase * PIANIST_EXTENSION_RATIO) {
-      return {
-        ...result,
-        tensionRaw: false,
-        feedback: "Good posture",
-      };
+    // Whole-body lean is normal piano playing posture — suppress leanRaw.
+    // The SideViewStrategy only sets leanRaw when the body tilts as a unit
+    // (ear-shoulder distance stable), so head-forward/neck-curve are already
+    // reported as tensionRaw and won't be suppressed here.
+    if (filtered.leanRaw) {
+      filtered.leanRaw = false;
+      if (!filtered.tensionRaw) {
+        filtered.feedback = "Good posture";
+      }
     }
 
-    return result;
+    // Wrists extended beyond baseline → pianist reaching for keys, not shrugging.
+    if (filtered.tensionRaw && landmarks.length >= 25) {
+      const base = baseline as SideBaseline;
+      const baseLeft = base.wristShoulderDistLeft ?? 0;
+      const baseRight = base.wristShoulderDistRight ?? 0;
+      const avgBase = (baseLeft + baseRight) / 2;
+
+      if (avgBase >= 1e-6) {
+        const nowLeft = dist3(landmarks[WRIST_LEFT], landmarks[SHOULDER_LEFT]);
+        const nowRight = dist3(landmarks[WRIST_RIGHT], landmarks[SHOULDER_RIGHT]);
+        const avgNow = (nowLeft + nowRight) / 2;
+
+        if (avgNow > avgBase * PIANIST_EXTENSION_RATIO) {
+          filtered = {
+            ...filtered,
+            tensionRaw: false,
+            feedback: "Good posture",
+          };
+        }
+      }
+    }
+
+    return filtered;
   }
 }
 

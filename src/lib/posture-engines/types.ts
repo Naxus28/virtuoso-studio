@@ -52,8 +52,25 @@ export interface FrontBaseline {
   earShoulderVertRight: number;
 }
 
-/** Baseline for side/angle views (ear-shoulder distances, angles, shrug detection). */
+/** Baseline for side/angle views.
+ *  Primary detection uses 2D image landmarks (reliable even in side view).
+ *  World-coordinate fields kept for Piano wrist-extension filter. */
 export interface SideBaseline {
+  // --- 2D image landmarks (normalized 0–1) — primary detection signals ---
+  /** Horizontal gap |ear.x − shoulder.x| per side (head-forward detection). */
+  earShoulderDxLeft: number;
+  earShoulderDxRight: number;
+  /** Vertical gap shoulder.y − ear.y per side (positive = ear above shoulder). */
+  earShoulderDyLeft: number;
+  earShoulderDyRight: number;
+  /** Shoulder y-position in image (shrug detection). */
+  imgShoulderYLeft: number;
+  imgShoulderYRight: number;
+  /** Ear y-position in image (ear-stability check). */
+  imgEarYLeft: number;
+  imgEarYRight: number;
+
+  // --- World coordinates (secondary / Piano filter) ---
   distLeft: number;
   distRight: number;
   angleLeft: number;
@@ -67,7 +84,7 @@ export interface SideBaseline {
   /** Piano filter: wrist-shoulder distance at calibration. */
   wristShoulderDistLeft?: number;
   wristShoulderDistRight?: number;
-  /** 2D angle path (image plane) for SideViewStrategy. */
+  /** 2D angle path (image plane). */
   angleLeft2D?: number;
   angleRight2D?: number;
 }
