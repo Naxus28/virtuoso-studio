@@ -14,7 +14,7 @@ export {
   AutoDetectStrategy,
 } from "./ViewStrategies";
 export type { Sensitivity, InstrumentConfig } from "./Instruments";
-export { Instrument, Piano, Guitar } from "./Instruments";
+export { Instrument, Piano, Guitar, Generic } from "./Instruments";
 export type { InstrumentId, ViewId, EngineOptions, LegacyEngineId } from "./EngineFactory";
 export { EngineFactory } from "./EngineFactory";
 

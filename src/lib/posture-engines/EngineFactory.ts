@@ -13,7 +13,7 @@ import {
   AutoDetectStrategy,
 } from "./ViewStrategies";
 import type { Sensitivity } from "./Instruments";
-import { Piano, Guitar, Instrument } from "./Instruments";
+import { Piano, Guitar, Generic, Instrument } from "./Instruments";
 
 // Legacy imports for getEngine backward compat
 import type { BaseView } from "./BaseView";
@@ -49,7 +49,7 @@ export function getEngine(id: string): BaseView {
   }
 }
 
-export type InstrumentId = "piano" | "guitar";
+export type InstrumentId = "piano" | "guitar" | "generic";
 export type ViewId = "front" | "side" | "auto";
 
 export interface EngineOptions {
@@ -76,6 +76,7 @@ function buildView(id: ViewId): ViewStrategy {
 const DEFAULT_VIEW: Record<InstrumentId, ViewId> = {
   piano: "side",
   guitar: "front",
+  generic: "front",
 };
 
 // ---------------------------------------------------------------------------
@@ -108,6 +109,8 @@ export class EngineFactory {
         return new Piano({ view, sensitivity });
       case "guitar":
         return new Guitar({ view, sensitivity });
+      case "generic":
+        return new Generic({ view, sensitivity });
     }
   }
 }

@@ -264,7 +264,7 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
     if (session?.recording) {
       setSessionRecording(session.recording);
       setIsPlayback(true);
-      setReplaySessionInfo({ name: session.name, viewMode: session.viewMode });
+      setReplaySessionInfo({ name: session.name, viewMode: session.viewMode ?? (session.view === "side" ? "side" : "front") });
       playbackStartTimeRef.current = performance.now();
     }
   }, [replayId]);

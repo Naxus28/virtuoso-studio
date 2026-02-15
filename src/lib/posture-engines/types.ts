@@ -33,6 +33,8 @@ export interface ValidateInput {
   landmarks: WorldLandmark[];
   baseline: Baseline;
   imageLandmarks?: ImageLandmark[];
+  /** Optional hand frame for dexterity metric updates. */
+  handFrames?: import("../dexterity/types").HandFrame[];
 }
 
 export interface ValidateResult {

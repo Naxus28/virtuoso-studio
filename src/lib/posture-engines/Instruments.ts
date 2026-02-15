@@ -23,6 +23,7 @@ import {
   SHOULDER_RIGHT,
   dist3,
 } from "./utils";
+import type { DexterityMetric } from "../dexterity/types";
 
 // ---------------------------------------------------------------------------
 // Shared types
@@ -33,6 +34,8 @@ export type Sensitivity = "low" | "medium" | "high";
 export interface InstrumentConfig {
   view: ViewStrategy;
   sensitivity?: Sensitivity;
+  /** Optional dexterity metrics — observational only, never affect posture. */
+  dexterity?: DexterityMetric[];
 }
 
 /** Maps sensitivity labels to a multiplier applied to the view's threshold. */
@@ -51,11 +54,13 @@ export abstract class Instrument {
   protected readonly view: ViewStrategy;
   protected readonly sensitivity: Sensitivity;
   protected readonly sensitivityMultiplier: number;
+  private readonly dexterityMetrics: DexterityMetric[];
 
   constructor(config: InstrumentConfig) {
     this.view = config.view;
     this.sensitivity = config.sensitivity ?? "medium";
     this.sensitivityMultiplier = SENSITIVITY_MULTIPLIER[this.sensitivity];
+    this.dexterityMetrics = config.dexterity ?? [];
   }
 
   /** The perspective in use (delegated from the composed ViewStrategy). */
@@ -71,12 +76,41 @@ export abstract class Instrument {
   /**
    * Full validation pipeline:
    *   ViewStrategy.validate → applyFilters → ValidateResult
+   *
+   * If `input.handFrames` are provided, dexterity metrics are updated
+   * as a side-effect (they never influence the posture result).
    */
   validate(input: ValidateInput): ValidateResult {
-    const { landmarks, baseline, imageLandmarks } = input;
+    const { landmarks, baseline, imageLandmarks, handFrames } = input;
+
+    // Drive dexterity metrics (observational only).
+    if (handFrames && handFrames.length > 0) {
+      for (const frame of handFrames) {
+        for (const metric of this.dexterityMetrics) {
+          metric.update(frame);
+        }
+      }
+    }
+
     const raw = this.view.validate(landmarks, baseline, imageLandmarks);
     const filtered = this.applyFilters(raw, landmarks, baseline);
     return { isTense: filtered.isTense, feedback: filtered.feedback };
+  }
+
+  /** Retrieve current results from all composed dexterity metrics. */
+  getDexterityResults(): Record<string, unknown> {
+    const results: Record<string, unknown> = {};
+    for (const metric of this.dexterityMetrics) {
+      results[metric.name] = metric.getResult();
+    }
+    return results;
+  }
+
+  /** Reset all dexterity metrics. */
+  resetDexterity(): void {
+    for (const metric of this.dexterityMetrics) {
+      metric.reset();
+    }
   }
 
   /**
@@ -106,6 +140,7 @@ export class Piano extends Instrument {
     super({
       view: config?.view ?? new SideViewStrategy(),
       sensitivity: config?.sensitivity,
+      dexterity: config?.dexterity,
     });
   }
 
@@ -147,9 +182,26 @@ export class Guitar extends Instrument {
     super({
       view: config?.view ?? new FrontViewStrategy(),
       sensitivity: config?.sensitivity,
+      dexterity: config?.dexterity,
     });
   }
 
   // Passthrough — no instrument-specific overrides yet.
   // Ready for future rules (e.g. allowing asymmetric shoulders for classical hold).
+}
+
+// ---------------------------------------------------------------------------
+// Generic (no instrument-specific rules)
+// ---------------------------------------------------------------------------
+
+export class Generic extends Instrument {
+  readonly name = "Generic";
+
+  constructor(config?: Partial<InstrumentConfig>) {
+    super({
+      view: config?.view ?? new FrontViewStrategy(),
+      sensitivity: config?.sensitivity,
+      dexterity: config?.dexterity,
+    });
+  }
 }
