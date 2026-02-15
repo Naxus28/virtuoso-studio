@@ -12,10 +12,11 @@ import {
   RotateCcw,
   Trash2,
   Camera,
+  Save,
 } from "lucide-react";
 import { SessionRecorder } from "@/lib/SessionRecorder";
 import type { SessionRecording } from "@/lib/SessionRecorder";
-import { saveSession, getSessionById } from "@/lib/sessionLibrary";
+import { saveSession, getSessionById, getStoredSessions } from "@/lib/sessionLibrary";
 import { SessionStats } from "@/components/SessionStats";
 import { drawSkeleton } from "./PostureEngine.draw";
 
@@ -236,6 +237,8 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
   const [isPlayback, setIsPlayback] = useState(false);
   const [playbackLandmarks, setPlaybackLandmarks] = useState<Landmark[]>([]);
   const [playbackSlouch, setPlaybackSlouch] = useState(false);
+  const [isStopped, setIsStopped] = useState(false);
+  const [sessionName, setSessionName] = useState("");
   /** When replaying from library, show session name and view mode in the overlay */
   const [replaySessionInfo, setReplaySessionInfo] = useState<{ name: string; viewMode: ViewMode } | null>(null);
 
@@ -432,17 +435,42 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
     const rec = sessionRecorderRef.current.stop();
     setIsRecording(false);
     setSessionRecording(rec);
+    setIsStopped(true);
     setIsPlayback(false);
-
-    const name = typeof window !== "undefined" ? window.prompt("Name this session (optional):") ?? "" : "";
-    if (typeof window !== "undefined") {
-      saveSession({
-        name: name.trim() || "Unnamed Session",
-        viewMode: viewModeRef.current,
-        recording: rec,
-      });
-    }
+    // Generate default name
+    const count = getStoredSessions().length + 1;
+    const now = new Date();
+    const dateStr = now.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    setSessionName(`Session ${count} — ${dateStr}`);
   }, []);
+
+  const handleContinueSession = useCallback(() => {
+    sessionRecorderRef.current.start(
+      videoSizeRef.current.width,
+      videoSizeRef.current.height
+    );
+    setIsRecording(true);
+    setIsStopped(false);
+    setIsPlayback(false);
+  }, []);
+
+  const handleSaveSession = useCallback(() => {
+    if (!sessionRecording) return;
+    saveSession({
+      name: sessionName.trim() || "Unnamed Session",
+      viewMode: viewModeRef.current,
+      recording: sessionRecording,
+    });
+    setSessionRecording(null);
+    setIsStopped(false);
+    setSessionName("");
+    setIsPlayback(false);
+  }, [sessionRecording, sessionName]);
 
   const handleReviewSession = useCallback(() => {
     if (!sessionRecording || sessionRecording.frames.length === 0) return;
@@ -452,6 +480,7 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
 
   const handleBackToLive = useCallback(() => {
     setIsPlayback(false);
+    // Stay in stopped state — user can still save/continue/discard
   }, []);
 
   const handleStartNewSession = useCallback(() => {
@@ -464,7 +493,9 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
     sessionRecorderRef.current.stop();
     setSessionRecording(null);
     setIsRecording(false);
+    setIsStopped(false);
     setIsPlayback(false);
+    setSessionName("");
   }, []);
 
   // Process video frames (only when not in playback)
@@ -750,9 +781,15 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
             Calibrate
           </button>
         </div>
-        <div className="flex flex-wrap items-center justify-center gap-3">
+        {/* Calibration hint */}
+        {!isCalibrated && !replaySessionInfo && (
+          <div className="rounded-lg bg-zinc-800/60 border border-zinc-700 p-3 text-sm text-zinc-400">
+            Sit in your best posture and click <strong className="text-zinc-200">Calibrate</strong> to set your baseline. The app will alert you when you deviate from this position.
+          </div>
+        )}
 
-        <div className="w-full flex flex-col gap-1 basis-full">
+        {/* Sensitivity slider */}
+        <div className="flex flex-col gap-1">
           <label htmlFor="sensitivity" className="text-sm text-zinc-400 flex justify-between">
             <span>Sensitivity</span>
             <span>
@@ -775,84 +812,153 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
           </div>
         </div>
 
-        {!isRecording && (
-          <button
-            type="button"
-            onClick={handleStartSession}
-            disabled={!isPoseReady || !isCalibrated}
-            className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50 disabled:pointer-events-none"
-          >
-            <Play size={18} />
-            {sessionRecording ? "Continue Session" : "Start Session"}
-          </button>
-        )}
-        {isRecording && (
-          <>
+        {/* Session controls */}
+        <div className="flex flex-wrap items-center justify-center gap-3">
+          {/* Idle: calibrated, no active session, not stopped, not replaying from library */}
+          {isCalibrated && !isRecording && !isStopped && !isPlayback && !replaySessionInfo && (
             <button
               type="button"
-              onClick={handleStopSession}
-              className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-500"
-            >
-              <Square size={18} />
-              Stop Session
-            </button>
-            <button
-              type="button"
-              onClick={handleDiscardAndRestart}
-              className="inline-flex items-center gap-2 rounded-lg bg-zinc-600 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-500"
-            >
-              <Trash2 size={18} />
-              Discard & Restart
-            </button>
-          </>
-        )}
-        {hasRecording && !isPlayback && (
-          <button
-            type="button"
-            onClick={handleReviewSession}
-            className="inline-flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-500"
-          >
-            <RotateCcw size={18} />
-            Review Session
-          </button>
-        )}
-        {isPlayback && (
-          <>
-            <button
-              type="button"
-              onClick={handleBackToLive}
-              className="inline-flex items-center gap-2 rounded-lg bg-zinc-600 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-500"
-            >
-              Back to Live
-            </button>
-            <button
-              type="button"
-              onClick={handleStartNewSession}
-              className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
+              onClick={handleStartSession}
+              disabled={!isPoseReady}
+              className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50 disabled:pointer-events-none"
             >
               <Play size={18} />
-              Start New Session
+              Start Session
             </button>
-          </>
-        )}
+          )}
 
-        {isCalibrated && showLiveView && (
-          <span className="text-zinc-400 text-sm">
-            {viewMode === "side"
-              ? alertType === "lean"
-                ? "Lean detected"
-                : "Good posture"
-              : alertType === "tension"
-                ? "Tension detected"
-                : alertType === "lean"
+          {/* Recording */}
+          {isRecording && (
+            <>
+              <button
+                type="button"
+                onClick={handleStopSession}
+                className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-500"
+              >
+                <Square size={18} />
+                Stop Session
+              </button>
+              <button
+                type="button"
+                onClick={handleDiscardAndRestart}
+                className="inline-flex items-center gap-2 rounded-lg bg-zinc-600 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-500"
+              >
+                <Trash2 size={18} />
+                Discard
+              </button>
+            </>
+          )}
+
+          {/* Stopped (unsaved) — not in playback */}
+          {isStopped && !isPlayback && !isRecording && (
+            <>
+              <div className="w-full">
+                <label htmlFor="session-name" className="block text-sm text-zinc-400 mb-1">Session name</label>
+                <input
+                  id="session-name"
+                  type="text"
+                  value={sessionName}
+                  onChange={(e) => setSessionName(e.target.value)}
+                  className="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500"
+                  placeholder="Session name…"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={handleSaveSession}
+                className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
+              >
+                <Save size={18} />
+                Save Session
+              </button>
+              <button
+                type="button"
+                onClick={handleContinueSession}
+                className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
+              >
+                <Play size={18} />
+                Continue Recording
+              </button>
+              <button
+                type="button"
+                onClick={handleReviewSession}
+                disabled={!hasRecording}
+                className="inline-flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-500 disabled:opacity-50 disabled:pointer-events-none"
+              >
+                <RotateCcw size={18} />
+                Review
+              </button>
+              <button
+                type="button"
+                onClick={handleDiscardAndRestart}
+                className="inline-flex items-center gap-2 rounded-lg bg-zinc-600 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-500"
+              >
+                <Trash2 size={18} />
+                Discard
+              </button>
+            </>
+          )}
+
+          {/* Reviewing from stopped state (not from library) */}
+          {isPlayback && isStopped && !replaySessionInfo && (
+            <>
+              <button
+                type="button"
+                onClick={handleBackToLive}
+                className="inline-flex items-center gap-2 rounded-lg bg-zinc-600 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-500"
+              >
+                Back
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveSession}
+                className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
+              >
+                <Save size={18} />
+                Save Session
+              </button>
+            </>
+          )}
+
+          {/* Replaying from library */}
+          {isPlayback && replaySessionInfo && (
+            <>
+              <button
+                type="button"
+                onClick={handleBackToLive}
+                className="inline-flex items-center gap-2 rounded-lg bg-zinc-600 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-500"
+              >
+                Back to Live
+              </button>
+              <button
+                type="button"
+                onClick={handleStartNewSession}
+                className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
+              >
+                <Play size={18} />
+                Start New Session
+              </button>
+            </>
+          )}
+
+          {/* Posture status text */}
+          {isCalibrated && showLiveView && !isStopped && (
+            <span className="text-zinc-400 text-sm">
+              {viewMode === "side"
+                ? alertType === "lean"
                   ? "Lean detected"
-                  : "Good posture"}
-          </span>
-        )}
+                  : "Good posture"
+                : alertType === "tension"
+                  ? "Tension detected"
+                  : alertType === "lean"
+                    ? "Lean detected"
+                    : "Good posture"}
+            </span>
+          )}
         </div>
       </div>
 
-      {sessionRecording && !isPlayback && (
+      {sessionRecording && isStopped && !isPlayback && (
         <div className="w-full flex flex-col items-center gap-2">
           <h3 className="text-sm font-medium text-zinc-300 flex items-center gap-2">
             <BarChart3 size={18} />
