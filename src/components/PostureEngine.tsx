@@ -69,6 +69,27 @@ export function PostureEngine() {
     isCalibratedRef.current = isCalibrated;
   }, [baseline, isCalibrated]);
 
+  // MediaPipe/TFLite WASM logs "INFO: Created TensorFlow Lite XNNPACK delegate" to stderr;
+  // Next.js dev overlay treats that as an unhandled error. Downgrade it to console.log.
+  useEffect(() => {
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      const msg = args[0]?.toString?.() ?? "";
+      if (
+        msg.includes("INFO:") ||
+        msg.includes("TensorFlow Lite") ||
+        msg.includes("XNNPACK")
+      ) {
+        console.log("[MediaPipe]", ...args);
+        return;
+      }
+      originalError.apply(console, args);
+    };
+    return () => {
+      console.error = originalError;
+    };
+  }, []);
+
   // Initialize MediaPipe Pose (tasks-vision — avoids Emscripten Module.arguments error)
   useEffect(() => {
     let cancelled = false;
