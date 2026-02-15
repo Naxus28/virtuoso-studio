@@ -716,23 +716,30 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
       </div>
 
       <div className="w-full max-w-[640px] space-y-4">
-        <div className="flex flex-wrap items-center justify-center gap-3">
-          <span
-            className="rounded-lg bg-zinc-800 px-3 py-2 text-sm font-medium text-zinc-300 border border-zinc-600"
-            aria-live="polite"
-          >
-            View: {viewMode === "front" ? "Front" : "Side"}
-          </span>
-          <button
-            type="button"
-            onClick={handleToggleViewMode}
-            disabled={isRecording}
-            className="inline-flex items-center gap-2 rounded-lg bg-zinc-600 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-500 disabled:opacity-50 disabled:pointer-events-none"
-            title={viewMode === "front" ? "Side view focuses on ear–shoulder distance" : "Front view uses angle + shoulder symmetry"}
-          >
-            <Camera size={18} />
-            {viewMode === "front" ? "Switch to Side View" : "Switch to Front View"}
-          </button>
+        {/* View mode toggle + calibrate */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className={`inline-flex rounded-lg bg-zinc-800 border border-zinc-700 p-0.5 ${isRecording ? "opacity-50 pointer-events-none" : ""}`} role="radiogroup" aria-label="Camera view">
+            {(["front", "side"] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                role="radio"
+                aria-checked={viewMode === mode}
+                disabled={isRecording}
+                onClick={() => {
+                  if (viewMode !== mode) handleToggleViewMode();
+                }}
+                className={`relative inline-flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-medium transition-all ${
+                  viewMode === mode
+                    ? "bg-emerald-600 text-white shadow-sm"
+                    : "text-zinc-400 hover:text-zinc-100"
+                }`}
+              >
+                <Camera size={14} />
+                {mode === "front" ? "Front" : "Side"}
+              </button>
+            ))}
+          </div>
           <button
             type="button"
             onClick={handleCalibrate}
@@ -742,6 +749,8 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
             <Activity size={18} />
             Calibrate
           </button>
+        </div>
+        <div className="flex flex-wrap items-center justify-center gap-3">
 
         <div className="w-full flex flex-col gap-1 basis-full">
           <label htmlFor="sensitivity" className="text-sm text-zinc-400 flex justify-between">
