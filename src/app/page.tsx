@@ -29,10 +29,10 @@ export default function Home() {
               Launch Studio
             </Link>
             <Link
-              href="/library"
+              href="/dashboard"
               className="text-zinc-400 hover:text-zinc-100 text-sm transition-colors"
             >
-              Session Library →
+              Sign In →
             </Link>
           </div>
         </div>
