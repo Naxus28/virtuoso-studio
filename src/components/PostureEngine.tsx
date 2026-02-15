@@ -43,6 +43,10 @@ const SHRUG_TOLERANCE_WORLD = 0.025; // ~25mm one-sided rise with ear stable = s
 const QUALITY_ALERT_THRESHOLD = 0.88;
 /** Front view: max shoulder height difference (world Y, meters) for symmetry */
 const FRONT_SHOULDER_SYMMETRY_TOLERANCE_M = 0.03;
+/** Front view: alert when one shoulder is this much higher than the other (m). */
+const FRONT_SHOULDER_ASYMMETRY_ALERT_M = 0.015;
+/** Map shoulder asymmetry (m) to chart severity for tension. Asymmetry >= this = worst (0.5). */
+const TENSION_SEVERITY_MAX_ASYMMETRY_M = 0.06;
 
 const TENSION_HUM_HZ = 200;
 const TENSION_HUM_GAIN_MIN = 0.05;
@@ -587,10 +591,25 @@ export function PostureEngine({ replayId }: PostureEngineProps = {}) {
                 if (tensionPersisted) return "tension";
                 return null;
               });
-              recordedQuality =
-                leanPersisted || tensionPersisted
-                  ? Math.min(quality, QUALITY_ALERT_THRESHOLD - 0.01)
-                  : quality;
+              if (leanPersisted || tensionPersisted) {
+                if (tensionPersisted) {
+                  const asymmetry = Math.abs(
+                    worldSmoothed[SHOULDER_LEFT].y - worldSmoothed[SHOULDER_RIGHT].y
+                  );
+                  const tensionSeverity = Math.max(
+                    0.5,
+                    0.87 -
+                      ((asymmetry - FRONT_SHOULDER_ASYMMETRY_ALERT_M) /
+                        (TENSION_SEVERITY_MAX_ASYMMETRY_M - FRONT_SHOULDER_ASYMMETRY_ALERT_M)) *
+                        0.37
+                  );
+                  recordedQuality = Math.min(quality, tensionSeverity);
+                } else {
+                  recordedQuality = Math.min(quality, QUALITY_ALERT_THRESHOLD - 0.01);
+                }
+              } else {
+                recordedQuality = quality;
+              }
             } else if (isCalibratedRef.current && mode === "side" && sideBase != null) {
               const ratioThreshold = sensitivityToRatioThreshold(sensitivityRef.current);
               const { leanRaw, quality: q } = evaluatePostureSide(
